@@ -8,11 +8,20 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from langchain.agents import AgentExecutor, create_openai_tools_agent
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.tools import StructuredTool
-from langchain_openai import AzureChatOpenAI, ChatOpenAI
-from pydantic import BaseModel, Field
+# LangChain imports are optional — the orchestrator falls back to
+# rule-based quick_analysis() when LangChain is unavailable or broken.
+_LANGCHAIN_AVAILABLE = False
+try:
+    from langchain.agents import AgentExecutor, create_openai_tools_agent
+    from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
+    from langchain.tools import StructuredTool
+    from langchain_openai import AzureChatOpenAI, ChatOpenAI
+    from pydantic import BaseModel, Field
+    _LANGCHAIN_AVAILABLE = True
+except Exception:
+    # Provide lightweight stubs so the rest of the module can load
+    BaseModel = object  # type: ignore[misc]
+    Field = lambda *a, **kw: None  # type: ignore[assignment]
 
 from config import settings
 from agents.signal_optimizer import SignalOptimizerAgent
@@ -20,22 +29,23 @@ from agents.route_recommender import RouteRecommenderAgent
 from agents.emergency_priority import EmergencyPriorityAgent
 
 
-# ─── Tool input schemas ───────────────────────────────────────────────────────
+# ─── Tool input schemas (only needed when LangChain is available) ─────────────
 
-class SignalOptInput(BaseModel):
-    signal_states_json: str = Field(
-        description="JSON string of current signal states from simulation.get_signal_state()"
-    )
+if _LANGCHAIN_AVAILABLE:
+    class SignalOptInput(BaseModel):
+        signal_states_json: str = Field(
+            description="JSON string of current signal states from simulation.get_signal_state()"
+        )
 
-class RouteInput(BaseModel):
-    signal_states_json: str = Field(
-        description="JSON string of current signal states"
-    )
+    class RouteInput(BaseModel):
+        signal_states_json: str = Field(
+            description="JSON string of current signal states"
+        )
 
-class EmergencyInput(BaseModel):
-    vehicle_type: str  = Field(default="ambulance", description="Type of emergency vehicle")
-    entry_lane:   str  = Field(default="EB_top",    description="Entry lane key")
-    vehicle_id:   int  = Field(default=999,         description="Vehicle identifier")
+    class EmergencyInput(BaseModel):
+        vehicle_type: str  = Field(default="ambulance", description="Type of emergency vehicle")
+        entry_lane:   str  = Field(default="EB_top",    description="Entry lane key")
+        vehicle_id:   int  = Field(default=999,         description="Vehicle identifier")
 
 
 # ─── Orchestrator ─────────────────────────────────────────────────────────────
@@ -128,6 +138,8 @@ Safety constraints:
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _build_llm(self):
+        if not _LANGCHAIN_AVAILABLE:
+            return None
         try:
             if settings.llm_provider == "azure" and settings.azure_openai_api_key:
                 return AzureChatOpenAI(
@@ -148,6 +160,9 @@ Safety constraints:
         return None
 
     def _build_tools(self) -> List:
+        if not _LANGCHAIN_AVAILABLE:
+            return []
+
         def _signal_opt(signal_states_json: str) -> str:
             states = json.loads(signal_states_json)
             recs   = self.signal_agent.compute_recommendations(states)
@@ -192,8 +207,8 @@ Safety constraints:
             ),
         ]
 
-    def _build_executor(self) -> Optional[AgentExecutor]:
-        if self._llm is None:
+    def _build_executor(self) -> Optional[Any]:
+        if not _LANGCHAIN_AVAILABLE or self._llm is None:
             return None
         prompt = ChatPromptTemplate.from_messages([
             ("system", self.SYSTEM_PROMPT),
@@ -202,3 +217,4 @@ Safety constraints:
         ])
         agent = create_openai_tools_agent(self._llm, self._tools, prompt)
         return AgentExecutor(agent=agent, tools=self._tools, verbose=True)
+
