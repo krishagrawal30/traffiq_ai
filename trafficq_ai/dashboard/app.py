@@ -97,38 +97,11 @@ sig_col, agent_col = st.columns([3, 2])
 chart_col1, chart_col2 = st.columns(2)
 log_col1, log_col2 = st.columns(2)
 
-placeholder = st.empty()
+# ─── Simulation Step ──────────────────────────────────────────────────────────
 
-# ─── Main loop ────────────────────────────────────────────────────────────────
+sim = st.session_state.sim
 
-def _gauge(value, title, max_val=100, color="blue"):
-    fig = go.Figure(go.Indicator(
-        mode  = "gauge+number",
-        value = value,
-        title = {"text": title, "font": {"size": 13}},
-        gauge = {
-            "axis":  {"range": [0, max_val]},
-            "bar":   {"color": color},
-            "steps": [
-                {"range": [0, max_val*0.4],  "color": "#d1fae5"},
-                {"range": [max_val*0.4, max_val*0.7], "color": "#fef3c7"},
-                {"range": [max_val*0.7, max_val],     "color": "#fee2e2"},
-            ],
-        },
-        number={"suffix": "" if max_val != 100 else "%"},
-    ))
-    fig.update_layout(height=180, margin=dict(l=10, r=10, t=30, b=10))
-    return fig
-
-
-MAX_ITERS = 2000
-
-for _ in range(MAX_ITERS):
-    sim = st.session_state.sim
-    if not (st.session_state.running and sim):
-        time.sleep(0.1)
-        continue
-
+if st.session_state.running and sim:
     # Step simulation + poll emergency agent
     for _ in range(2):
         sim.step()
@@ -147,14 +120,26 @@ for _ in range(MAX_ITERS):
     route_recs = st.session_state.rte_agent.analyse(states)
     st.session_state.sig_agent.apply_recommendations(sim, sig_recs)
 
-    # ── KPIs ─────────────────────────────────────────────────────────────────
-    with kpi0: st.metric("Vehicles",    metrics["total_vehicles"])
-    with kpi1: st.metric("Waiting",     metrics["waiting_count"])
-    with kpi2: st.metric("Avg wait",    f"{metrics['avg_wait_s']:.1f}s")
-    with kpi3: st.metric("Congestion",  f"{metrics['congestion_pct']:.0f}%")
-    with kpi4: st.metric("Throughput",  f"{metrics['throughput_pm']:.0f}/min")
+elif sim:
+    metrics = sim.get_metrics()
+    states  = sim.get_signal_state()
+    sig_recs   = st.session_state.sig_agent.compute_recommendations(states)
+    route_recs = st.session_state.rte_agent.analyse(states)
+else:
+    metrics = {"total_vehicles": 0, "waiting_count": 0, "avg_wait_s": 0.0, "congestion_pct": 0.0, "throughput_pm": 0.0}
+    states = []
+    sig_recs = []
+    route_recs = []
 
-    # ── Signal status ─────────────────────────────────────────────────────────
+# ── KPIs ─────────────────────────────────────────────────────────────────
+with kpi0: st.metric("Vehicles",    metrics["total_vehicles"])
+with kpi1: st.metric("Waiting",     metrics["waiting_count"])
+with kpi2: st.metric("Avg wait",    f"{metrics['avg_wait_s']:.1f}s")
+with kpi3: st.metric("Congestion",  f"{metrics['congestion_pct']:.0f}%")
+with kpi4: st.metric("Throughput",  f"{metrics['throughput_pm']:.0f}/min")
+
+# ── Signal status ─────────────────────────────────────────────────────────
+if states:
     with sig_col:
         st.markdown("### Signal State — Agent 01")
         df_sig = pd.DataFrame(states)[
@@ -164,31 +149,33 @@ for _ in range(MAX_ITERS):
                           "NS Queue","EW Queue","Congestion %","Override"]
         st.dataframe(df_sig, use_container_width=True, hide_index=True)
 
-    # ── Agent status panels ───────────────────────────────────────────────────
-    with agent_col:
-        st.markdown("### Agent Status")
-        for r in route_recs:
-            colour = {"LOW":"🟢","MODERATE":"🟡","HIGH":"🟠","CRITICAL":"🔴"}.get(r.severity,"⚪")
-            st.write(f"{colour} **{r.corridor}** — {r.congestion_pct:.0f}% {r.severity}")
-        st.divider()
-        emg = st.session_state.emg_agent
-        st.write(f"🚨 Agent 03: **{emg.status.value}**")
-        for msg in st.session_state.emerg_log[-3:]:
-            st.caption(msg)
+# ── Agent status panels ───────────────────────────────────────────────────
+with agent_col:
+    st.markdown("### Agent Status")
+    for r in route_recs:
+        colour = {"LOW":"🟢","MODERATE":"🟡","HIGH":"🟠","CRITICAL":"🔴"}.get(r.severity,"⚪")
+        st.write(f"{colour} **{r.corridor}** — {r.congestion_pct:.0f}% {r.severity}")
+    st.divider()
+    emg = st.session_state.emg_agent
+    st.write(f"🚨 Agent 03: **{emg.status.value}**")
+    for msg in st.session_state.emerg_log[-3:]:
+        st.caption(msg)
 
-    # ── History charts ────────────────────────────────────────────────────────
-    if len(st.session_state.frame_log) > 2:
-        df_h = pd.DataFrame(st.session_state.frame_log)
-        with chart_col1:
-            fig = px.line(df_h, y="avg_wait_s", title="Avg Wait Time (s)",
-                          labels={"avg_wait_s":"seconds","index":"frame"})
-            fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig, use_container_width=True)
-        with chart_col2:
-            fig = px.line(df_h, y="congestion_pct", title="Congestion Index (%)",
-                          color_discrete_sequence=["#ef4444"],
-                          labels={"congestion_pct":"%","index":"frame"})
-            fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
-            st.plotly_chart(fig, use_container_width=True)
+# ── History charts ────────────────────────────────────────────────────────
+if len(st.session_state.frame_log) > 2:
+    df_h = pd.DataFrame(st.session_state.frame_log)
+    with chart_col1:
+        fig = px.line(df_h, y="avg_wait_s", title="Avg Wait Time (s)",
+                      labels={"avg_wait_s":"seconds","index":"frame"})
+        fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
+        st.plotly_chart(fig, use_container_width=True)
+    with chart_col2:
+        fig = px.line(df_h, y="congestion_pct", title="Congestion Index (%)",
+                      color_discrete_sequence=["#ef4444"],
+                      labels={"congestion_pct":"%","index":"frame"})
+        fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
+        st.plotly_chart(fig, use_container_width=True)
 
+if st.session_state.running:
     time.sleep(0.05)
+    st.rerun()

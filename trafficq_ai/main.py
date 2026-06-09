@@ -17,7 +17,7 @@ def run_api():
     uvicorn.run("api.app:app", host="0.0.0.0", port=8000, reload=True)
 
 def run_dashboard():
-    os.system("streamlit run dashboard/app.py")
+    os.system(f'"{sys.executable}" -m streamlit run dashboard/app.py')
 
 def run_simulate():
     from simulation.engine import TrafficSimulation
