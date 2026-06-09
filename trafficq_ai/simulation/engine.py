@@ -185,12 +185,21 @@ class TrafficSimulation:
             inter.corridor_phase  = SignalPhase.EW if l["dir"] == "H" else SignalPhase.NS
         return vid
 
-    def release_corridor(self, lane: str = "EB_top") -> None:
-        """Agent 03: release signal overrides after emergency clears."""
+    def release_corridor(self, lane: str | None = None) -> None:
+        """Agent 03: release signal overrides after emergency clears.
+        
+        If lane is None, release ALL overridden intersections.
+        If lane is specified, release only the intersections on that lane.
+        """
         self._corridor_lanes = set()
-        for iname in LANE_DEFS[lane]["inters"]:
-            inter         = self.intersections[iname]
-            inter.override = False
+        if lane is None:
+            # Release all overridden intersections
+            for inter in self.intersections.values():
+                inter.override = False
+        else:
+            for iname in LANE_DEFS[lane]["inters"]:
+                inter         = self.intersections[iname]
+                inter.override = False
 
     def get_metrics(self) -> dict:
         """Return current-frame metrics snapshot."""
