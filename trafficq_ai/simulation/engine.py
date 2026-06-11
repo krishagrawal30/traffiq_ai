@@ -277,6 +277,9 @@ class TrafficSimulation:
                 self._spawn_timers[lk] = 0
 
     def _compute_wait_scores(self) -> None:
+        ns_stats = {name: {"wait_frames": 0, "emergency": 0} for name in self.intersections}
+        ew_stats = {name: {"wait_frames": 0, "emergency": 0} for name in self.intersections}
+
         for inter in self.intersections.values():
             inter.ns_wait_score = 0.0
             inter.ew_wait_score = 0.0
@@ -288,19 +291,34 @@ class TrafficSimulation:
                 continue
             l      = LANE_DEFS[v.lane]
             xd     = l.get("xd", l.get("yd", 1))
-            score  = 1.0 + v.wait_frames * 0.04
 
             for iname, stop in zip(l["inters"], l["stops"]):
                 dist = (stop - v.progress) * xd
                 if -0.05 <= dist <= 0.20:
                     inter = self.intersections[iname]
                     if l["dir"] == "V":
-                        inter.ns_wait_score += score
-                        inter.ns_queue      += 1
+                        inter.ns_queue += 1
+                        ns_stats[iname]["wait_frames"] += v.wait_frames
+                        if v.is_emergency:
+                            ns_stats[iname]["emergency"] += 1
                     else:
-                        inter.ew_wait_score += score
-                        inter.ew_queue      += 1
+                        inter.ew_queue += 1
+                        ew_stats[iname]["wait_frames"] += v.wait_frames
+                        if v.is_emergency:
+                            ew_stats[iname]["emergency"] += 1
                     break
+
+        for iname, inter in self.intersections.items():
+            ns_wait_time = ns_stats[iname]["wait_frames"] / self.fps
+            ew_wait_time = ew_stats[iname]["wait_frames"] / self.fps
+
+            # Congestion prediction based on queue lengths
+            ns_congestion = min(100.0, (inter.ns_queue / 20.0) * 100)
+            ew_congestion = min(100.0, (inter.ew_queue / 20.0) * 100)
+
+            # Priority = (Waiting Time × 0.6) + (Vehicle Count × 0.3) + (Emergency × 1000) + (Congestion Prediction × 0.1)
+            inter.ns_wait_score = (ns_wait_time * 0.6) + (inter.ns_queue * 0.3) + (ns_stats[iname]["emergency"] * 1000) + (ns_congestion * 0.1)
+            inter.ew_wait_score = (ew_wait_time * 0.6) + (inter.ew_queue * 0.3) + (ew_stats[iname]["emergency"] * 1000) + (ew_congestion * 0.1)
 
     def _can_proceed(self, lane_key: str, iname: str) -> bool:
         l     = LANE_DEFS[lane_key]
