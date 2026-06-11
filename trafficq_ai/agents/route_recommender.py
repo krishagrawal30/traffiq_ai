@@ -62,13 +62,24 @@ class RouteRecommenderAgent:
     # ── Public ────────────────────────────────────────────────────────────────
 
     def analyse(self, signal_states: List[dict]) -> List[RouteRecommendation]:
-        """Return a recommendation for each corridor."""
+        """Return a recommendation for each corridor based on directional congestion."""
         by_name = {s["name"]: s for s in signal_states}
         recs: List[RouteRecommendation] = []
 
         for corridor, inter_names in self.CORRIDORS.items():
-            # Average congestion across the intersections in this corridor
-            congs = [by_name[n]["congestion"] for n in inter_names if n in by_name]
+            # Average directional congestion across the intersections in this corridor
+            congs = []
+            for n in inter_names:
+                if n in by_name:
+                    s = by_name[n]
+                    if corridor.startswith("N-S"):
+                        q = s.get("ns_queue", 0)
+                    else:
+                        q = s.get("ew_queue", 0)
+                    # Directional congestion (cap assumed 20)
+                    dir_cong = min(100.0, (q / 20.0) * 100.0)
+                    congs.append(dir_cong)
+            
             avg_cong = sum(congs) / len(congs) if congs else 0.0
 
             # Track history
