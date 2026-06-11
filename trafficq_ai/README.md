@@ -16,7 +16,7 @@ TRAFFICQ AI replaces legacy fixed-timer traffic signals with a **three-agent AI 
 
 | Agent | Role |
 |-------|------|
-| **Agent 01 — Signal Optimizer**   | Adjusts green-light splits every cycle using wait-time scores |
+| **Agent 01 — Signal Optimizer**   | Adjusts green-light splits every cycle using priority scores |
 | **Agent 02 — Route Recommender**  | Detects corridor congestion and recommends diversions |
 | **Agent 03 — Emergency Priority** | Creates automated green corridors for first responders |
 
@@ -31,7 +31,7 @@ IoT Sensors / Cameras / GPS
    Simulation Engine  (pandas · numpy · queue model)
           ↓
    Agent Orchestrator  (LangChain · OpenAI / Azure GPT-4)
-    ├── Agent 01: Signal Optimization  (wait-time formula)
+    ├── Agent 01: Signal Optimization  (priority formula)
     ├── Agent 02: Route Recommendation (congestion thresholds)
     └── Agent 03: Emergency Priority   (green corridor)
           ↓
@@ -94,13 +94,13 @@ curl -X POST http://localhost:8000/emergency \
 
 ---
 
-## Core algorithm — wait-time signal formula
+## Core algorithm — priority signal formula
 
 ```
-G(NS) = max(G_min,  round( W(NS) / (W(NS) + W(EW)) × C ))
+G(NS) = max(G_min,  round( P(NS) / (P(NS) + P(EW)) × C ))
 
 where:
-  W(d) = Σ vehicles_waiting(d) × (1 + wait_time_s × 0.04)
+  P(d) = (Wait_Time × 0.6) + (Queue_Length × 0.3) + (Emergency × 1000) + (Congestion_Pct × 0.1)
   C    = cycle length (60 s)
   G_min = 15 s  (pedestrian safety floor)
 ```

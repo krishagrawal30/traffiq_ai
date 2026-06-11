@@ -55,7 +55,7 @@ class TrafficOrchestrator:
     LangChain agent that wraps the three sub-agents as callable tools.
 
     The LLM reasons over:
-      - Current signal states (queue depths, wait scores, phases)
+      - Current signal states (queue depths, priority scores, phases)
       - Current route congestion
       - Any active emergency
 

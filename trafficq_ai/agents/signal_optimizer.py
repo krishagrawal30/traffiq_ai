@@ -1,6 +1,6 @@
 """
 TRAFFICQ AI — Agent 01: Signal Optimization
-Computes optimal green-time splits using wait-time scores and issues
+Computes optimal green-time splits using priority scores and issues
 per-intersection timing recommendations.
 """
 from __future__ import annotations
@@ -26,8 +26,8 @@ class SignalOptimizerAgent:
     """
     Agent 01 — Signal Optimization
 
-    Implements the wait-time formula:
-        G(NS) = max(G_min, round( W(NS) / (W(NS)+W(EW)) × C ))
+    Implements the priority formula:
+        G(NS) = max(G_min, round( P(NS) / (P(NS)+P(EW)) × C ))
 
     and adds green-wave coordination by staggering offsets based on the
     average travel time between adjacent intersections.
@@ -76,7 +76,7 @@ class SignalOptimizerAgent:
             if total < 0.5:
                 ns_g = 30.0
                 ew_g = 30.0
-                reason = "Queue scores too low — maintaining equal split."
+                reason = "Priority scores too low — maintaining equal split."
                 conf   = 0.5
             else:
                 ns_raw = round(ns_score / total * self.CYCLE)

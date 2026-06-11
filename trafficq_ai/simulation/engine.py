@@ -5,7 +5,7 @@ Discrete-event simulation of a 2×2 intersection grid.
 Modes
 -----
 static   : All signals run fixed 30 s NS / 30 s EW cycles (legacy approach).
-adaptive : Agent 01 recalculates green splits every cycle using wait-time scores.
+adaptive : Agent 01 recalculates green splits every cycle using priority scores.
 """
 from __future__ import annotations
 

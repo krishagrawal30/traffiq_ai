@@ -7,7 +7,14 @@ import os
 from functools import lru_cache
 
 try:
-    from pydantic_settings import BaseSettings  # pydantic v2
+    from dotenv import load_dotenv
+    _env_path = os.path.join(os.path.dirname(__file__), ".env")
+    load_dotenv(_env_path)
+except ImportError:
+    pass
+
+try:
+    from pydantic_settings import BaseSettings, SettingsConfigDict  # pydantic v2
 
     class Settings(BaseSettings):
         # ── LLM ──────────────────────────────────────────────────────────────────
@@ -34,19 +41,14 @@ try:
         sim_min_green_seconds: int = 15
         sim_seed: int = 42
 
-        class Config:
-            env_file = ".env"
-            env_file_encoding = "utf-8"
-            extra = "ignore"
+        model_config = SettingsConfigDict(
+            env_file=os.path.join(os.path.dirname(__file__), ".env"),
+            env_file_encoding="utf-8",
+            extra="ignore"
+        )
 
 except ImportError:
     # Fallback when pydantic-settings is not installed
-    try:
-        from dotenv import load_dotenv
-        load_dotenv()
-    except ImportError:
-        pass
-
     class Settings:  # type: ignore[no-redef]
         """Lightweight fallback settings loaded from environment variables."""
         def __init__(self) -> None:

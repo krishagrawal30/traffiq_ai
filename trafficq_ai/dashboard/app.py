@@ -143,10 +143,10 @@ if states:
     with sig_col:
         st.markdown("### Signal State — Agent 01")
         df_sig = pd.DataFrame(states)[
-            ["name","phase","ns_green","ew_green","ns_queue","ew_queue","congestion","override"]
+            ["name","phase","ns_green","ew_green","ns_queue","ew_queue","ns_score","ew_score","congestion","override"]
         ]
         df_sig.columns = ["Intersection","Phase","NS Green (s)","EW Green (s)",
-                          "NS Queue","EW Queue","Congestion %","Override"]
+                          "NS Queue","EW Queue","NS Priority","EW Priority","Congestion %","Override"]
         st.dataframe(df_sig, use_container_width=True, hide_index=True)
 
 # ── Agent status panels ───────────────────────────────────────────────────
