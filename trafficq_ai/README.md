@@ -3,9 +3,7 @@
 *RCOEM Hackathon 2025 — Use Case 45/50*
 
 > *Traffic that adapts. Cities that breathe.*
-
 ---
-
 ## Team
 Siddhi Gangan · Yashika Rathi · Saidhiraj Kadwajiwar · Soham Darak · Krish Agrawal
 
