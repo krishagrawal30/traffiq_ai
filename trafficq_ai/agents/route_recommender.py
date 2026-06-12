@@ -95,7 +95,6 @@ class RouteRecommenderAgent:
                 alternate_route=self.ALTERNATE_ROUTES[corridor],
                 estimated_saving_s=saving,
             ))
-
         return recs
 
     def format_summary(self, recs: List[RouteRecommendation]) -> str:
