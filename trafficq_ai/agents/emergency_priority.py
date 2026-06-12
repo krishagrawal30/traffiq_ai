@@ -85,7 +85,6 @@ class EmergencyPriorityAgent:
         """
         self.status = EmergencyStatus.DETECTED
         self._t0    = sim.time_s
-
         route = self.CORRIDOR_ROUTES.get(entry_lane, ["NW", "NE"])
         event = EmergencyEvent(
             vehicle_id=vehicle_id,
@@ -95,12 +94,10 @@ class EmergencyPriorityAgent:
             corridor_intersections=route,
         )
         self.current_event = event
-
         self._log(
             f"🚨 DETECT — {vehicle_type.upper()} #{vehicle_id} approaching via {entry_lane}. "
             f"Calculated corridor: {' → '.join(route)}."
         )
-
         # ── Step 3: synchronise ──────────────────────────────────────────────
         emerg_vid = sim.dispatch_emergency(lane=entry_lane)
         event.response_time_s = sim.time_s - self._t0
