@@ -7,8 +7,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
-
-
 # ─── Types ────────────────────────────────────────────────────────────────────
 
 @dataclass
@@ -19,7 +17,6 @@ class RouteRecommendation:
     action: str              # plain-English action
     alternate_route: str
     estimated_saving_s: float
-
 
 # ─── Agent ────────────────────────────────────────────────────────────────────
 
