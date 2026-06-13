@@ -89,7 +89,6 @@ curl -X POST http://localhost:8000/emergency \
   -H "Content-Type: application/json" \
   -d '{"vehicle_type":"ambulance","entry_lane":"EB_top","vehicle_id":42}'
 ```
-
 ---
 
 ## Core algorithm — priority signal formula
@@ -102,7 +101,6 @@ where:
   C    = cycle length (60 s)
   G_min = 15 s  (pedestrian safety floor)
 ```
-
 Adjacent intersections are offset by the inter-intersection travel time
 (≈12 s) to create a coordinated green wave.
 
