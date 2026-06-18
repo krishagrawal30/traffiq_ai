@@ -42,6 +42,7 @@ class Intersection:
     ew_wait_score: float = 0.0
     override: bool = False         # True when Agent 03 holds this signal
     corridor_phase: SignalPhase = SignalPhase.EW  # phase forced during override
+    override_priority: int = 0     # Priority weight of active override (e.g. Ambulance = 100)
 
     # ── derived ──────────────────────────────────────────────────────────────
     @property
@@ -70,6 +71,10 @@ class Vehicle:
     is_emergency: bool = False
     color: str = "#3B8BD4"
     next_stop_idx: int = 0   # index into lane's stop list
+    route: List[str] = field(default_factory=list)
+    route_remaining: List[str] = field(default_factory=list)
+    priority: int = 100
+    vehicle_type: str = "ambulance"
 
 
 # ─── Lane definitions ─────────────────────────────────────────────────────────
@@ -86,6 +91,19 @@ LANE_DEFS: Dict[str, dict] = {
     "NB_left": dict(dir="V", lat=+0.28, yd=-1, inters=["SW","NW"], stops=[0.78,0.28], di=0),
     "SB_right":dict(dir="V", lat=-0.28, yd=+1, inters=["NE","SE"], stops=[0.22,0.72], di=1),
     "NB_right":dict(dir="V", lat=+0.28, yd=-1, inters=["SE","NE"], stops=[0.78,0.28], di=1),
+}
+
+
+# ─── Hop to Lane mapping for dynamic corridor routing ─────────────────────────
+HOP_TO_LANE: Dict[Tuple[str, str], str] = {
+    ("NW", "NE"): "EB_top",
+    ("NE", "NW"): "WB_top",
+    ("SW", "SE"): "EB_bot",
+    ("SE", "SW"): "WB_bot",
+    ("NW", "SW"): "SB_left",
+    ("SW", "NW"): "NB_left",
+    ("NE", "SE"): "SB_right",
+    ("SE", "NE"): "NB_right",
 }
 
 
@@ -168,21 +186,31 @@ class TrafficSimulation:
         self._update_vehicles()
         self._record_metrics()
 
-    def dispatch_emergency(self, lane: str = "EB_top") -> int:
+    def dispatch_emergency(
+        self,
+        lane: str = "EB_top",
+        route: Optional[List[str]] = None,
+        priority: int = 100,
+        vehicle_type: str = "ambulance",
+    ) -> int:
         """
         Agent 03: spawn emergency vehicle and activate green corridor.
         Returns the vehicle id of the emergency vehicle.
         """
         l  = LANE_DEFS[lane]
         start = 0.0 if l.get("xd", l.get("yd", 1)) > 0 else 1.0
-        vid = self._create_vehicle(lane, start, is_emergency=True, color="#EF4444")
+        vid = self._create_vehicle(
+            lane,
+            start,
+            is_emergency=True,
+            color="#EF4444",
+            route=route,
+            priority=priority,
+            vehicle_type=vehicle_type,
+        )
 
-        # Force EW green on all intersections along the corridor
+        # Register the starting lane
         self._corridor_lanes = {lane}
-        for iname in l["inters"]:
-            inter = self.intersections[iname]
-            inter.override        = True
-            inter.corridor_phase  = SignalPhase.EW if l["dir"] == "H" else SignalPhase.NS
         return vid
 
     def release_corridor(self, lane: str | None = None) -> None:
@@ -196,10 +224,12 @@ class TrafficSimulation:
             # Release all overridden intersections
             for inter in self.intersections.values():
                 inter.override = False
+                inter.override_priority = 0
         else:
             for iname in LANE_DEFS[lane]["inters"]:
                 inter         = self.intersections[iname]
                 inter.override = False
+                inter.override_priority = 0
 
     def get_metrics(self) -> dict:
         """Return current-frame metrics snapshot."""
@@ -242,6 +272,9 @@ class TrafficSimulation:
         start: float,
         is_emergency: bool = False,
         color: str = "#3B8BD4",
+        route: Optional[List[str]] = None,
+        priority: int = 100,
+        vehicle_type: str = "ambulance",
     ) -> int:
         vid = self._vid_counter
         self._vid_counter += 1
@@ -251,6 +284,10 @@ class TrafficSimulation:
                 vid=vid, lane=lane, progress=start,
                 speed=spd_scale / (self.fps * 4),
                 is_emergency=is_emergency, color=color,
+                route=route or [],
+                route_remaining=list(route or []),
+                priority=priority,
+                vehicle_type=vehicle_type,
             )
         )
         return vid
@@ -300,12 +337,12 @@ class TrafficSimulation:
                         inter.ns_queue += 1
                         ns_stats[iname]["wait_frames"] += v.wait_frames
                         if v.is_emergency:
-                            ns_stats[iname]["emergency"] += 1
+                            ns_stats[iname]["emergency"] += getattr(v, "priority", 100)
                     else:
                         inter.ew_queue += 1
                         ew_stats[iname]["wait_frames"] += v.wait_frames
                         if v.is_emergency:
-                            ew_stats[iname]["emergency"] += 1
+                            ew_stats[iname]["emergency"] += getattr(v, "priority", 100)
                     break
 
         for iname, inter in self.intersections.items():
@@ -316,9 +353,9 @@ class TrafficSimulation:
             ns_congestion = min(100.0, (inter.ns_queue / 20.0) * 100)
             ew_congestion = min(100.0, (inter.ew_queue / 20.0) * 100)
 
-            # Priority = (Waiting Time × 0.6) + (Vehicle Count × 0.3) + (Emergency × 1000) + (Congestion Prediction × 0.1)
-            inter.ns_wait_score = (ns_wait_time * 0.6) + (inter.ns_queue * 0.3) + (ns_stats[iname]["emergency"] * 1000) + (ns_congestion * 0.1)
-            inter.ew_wait_score = (ew_wait_time * 0.6) + (inter.ew_queue * 0.3) + (ew_stats[iname]["emergency"] * 1000) + (ew_congestion * 0.1)
+            # Priority = (Waiting Time × 0.6) + (Vehicle Count × 0.3) + (Emergency × 10) + (Congestion Prediction × 0.1)
+            inter.ns_wait_score = (ns_wait_time * 0.6) + (inter.ns_queue * 0.3) + (ns_stats[iname]["emergency"] * 10.0) + (ns_congestion * 0.1)
+            inter.ew_wait_score = (ew_wait_time * 0.6) + (inter.ew_queue * 0.3) + (ew_stats[iname]["emergency"] * 10.0) + (ew_congestion * 0.1)
 
     def _can_proceed(self, lane_key: str, iname: str) -> bool:
         l     = LANE_DEFS[lane_key]
@@ -381,6 +418,44 @@ class TrafficSimulation:
             else:
                 v.waiting   = False
                 v.progress += xd * v.speed
+
+                # Dynamic route transition for emergency vehicles
+                if v.is_emergency and len(v.route_remaining) >= 3:
+                    A = v.route_remaining[0]
+                    B = v.route_remaining[1]
+                    C = v.route_remaining[2]
+
+                    l_def = LANE_DEFS[v.lane]
+                    try:
+                        idx_B = l_def["inters"].index(B)
+                        sp_B = l_def["stops"][idx_B]
+                        passed_B = False
+                        if xd > 0 and v.progress >= sp_B:
+                            passed_B = True
+                        elif xd < 0 and v.progress <= sp_B:
+                            passed_B = True
+
+                        if passed_B:
+                            next_lane = HOP_TO_LANE.get((B, C))
+                            if next_lane:
+                                v.route_remaining.pop(0)  # Pop A, leaving B as first item
+                                v.lane = next_lane
+
+                                l_next = LANE_DEFS[next_lane]
+                                xd_next = l_next.get("xd", l_next.get("yd", 1))
+                                idx_B_next = l_next["inters"].index(B)
+                                sp_B_next = l_next["stops"][idx_B_next]
+
+                                # Shift slightly past the stop line in the new lane direction
+                                v.progress = sp_B_next + xd_next * 0.02
+                                v.next_stop_idx = 1
+                                self._corridor_lanes.add(next_lane)
+
+                                # Update variables for the rest of this loop iteration
+                                l = l_next
+                                xd = xd_next
+                    except ValueError:
+                        pass
 
             if -0.08 < v.progress < 1.08:
                 keep.append(v)

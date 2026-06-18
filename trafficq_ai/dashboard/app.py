@@ -81,12 +81,12 @@ with st.sidebar:
     if st.button("🚨 Dispatch Emergency", use_container_width=True):
         sim = st.session_state.sim
         if sim:
+            import random
+            vid = random.randint(10, 99)
             event = st.session_state.emg_agent.detect(
-                sim, vehicle_id=999, vehicle_type=e_type, entry_lane=e_lane
+                sim, vehicle_id=vid, vehicle_type=e_type, entry_lane=e_lane
             )
-            st.session_state.emerg_log.append(
-                f"🚨 {e_type.upper()} dispatched — corridor: {' → '.join(event.corridor_intersections)}"
-            )
+            st.session_state.emerg_log.append(event.explanation)
 
 # ─── Main layout ──────────────────────────────────────────────────────────────
 
@@ -157,9 +157,45 @@ with agent_col:
         st.write(f"{colour} **{r.corridor}** — {r.congestion_pct:.0f}% {r.severity}")
     st.divider()
     emg = st.session_state.emg_agent
-    st.write(f"🚨 Agent 03: **{emg.status.value}**")
+    st.write(f"🚨 Agent 03 Status: **{emg.status.value}**")
+    
+    if emg.status.value == "CORRIDOR_ACTIVE" and emg.current_event:
+        event = emg.current_event
+        card_html = f"""
+        <div style="
+            background: rgba(239, 68, 68, 0.08);
+            border: 1px solid rgba(239, 68, 68, 0.25);
+            border-radius: 8px;
+            padding: 15px;
+            margin-top: 10px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
+        ">
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
+                <span style="font-weight: bold; color: #EF4444; font-size: 1.1em;">🚨 Active Green Corridor</span>
+                <span style="background: rgba(239, 68, 68, 0.2); color: #EF4444; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
+                    Priority {event.priority}
+                </span>
+            </div>
+            <div style="font-size: 0.9em; color: #E2E8F0; line-height: 1.6;">
+                <strong>Vehicle:</strong> {event.vehicle_type.upper()} #{event.vehicle_id}<br/>
+                <strong>Selected Route:</strong> <code style="background: rgba(0,0,0,0.2); padding: 2px 4px; border-radius: 4px; color: #10B981;">{emg.selected_route_str}</code><br/>
+                <strong>Dynamic ETA:</strong> <span style="font-weight: bold; color: #F59E0B; font-size: 1.1em;">{emg.emergency_eta:.1f}s</span><br/>
+                <strong>Corridor Length:</strong> {emg.corridor_length_m:.0f} meters<br/>
+                <strong>Response Improvement:</strong> <span style="color: #10B981; font-weight: bold;">{emg.response_time_improvement_pct:.0f}% faster</span><br/>
+                <strong>Delay Reduced:</strong> <span style="color: #10B981; font-weight: bold;">~{emg.predicted_delay_reduction_s:.0f}s saved</span>
+            </div>
+            <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;"/>
+            <div style="font-size: 0.8em; font-family: monospace; color: #94A3B8; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 4px; white-space: pre-line;">
+                {emg.latest_explanation}
+            </div>
+        </div>
+        """
+        st.markdown(card_html, unsafe_allow_html=True)
+        
+    st.markdown("##### Recent Corridor Logs")
     for msg in st.session_state.emerg_log[-3:]:
-        st.caption(msg)
+        st.caption(msg.replace("\n", " | "))
 
 # ── History charts ────────────────────────────────────────────────────────
 if len(st.session_state.frame_log) > 2:

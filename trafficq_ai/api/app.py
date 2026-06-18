@@ -152,10 +152,7 @@ def create_app() -> FastAPI:
         return EmergencyResponse(
             status        = _emerg.status.value,
             corridor_path = event.corridor_intersections,
-            message       = (
-                f"{req.vehicle_type.capitalize()} #{req.vehicle_id} detected. "
-                f"Green corridor activated: {' → '.join(event.corridor_intersections)}."
-            ),
+            message       = event.explanation,
         )
 
     @app.get("/emergency/status", tags=["Emergency"])
