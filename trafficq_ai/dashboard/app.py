@@ -191,13 +191,11 @@ with map_col:
                 ws.onopen = () => {
                     document.getElementById('stats').innerHTML = "Connected to Agent Subsystem.";
                 };
-                
                 ws.onmessage = (event) => {
                     const data = JSON.parse(event.data);
                     updateMap(data);
                     updateUI(data);
                 };
-                
                 ws.onclose = () => {
                     document.getElementById('stats').innerHTML = "Connection lost. Reconnecting...";
                     setTimeout(connectWebSocket, 1000);
