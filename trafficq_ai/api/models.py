@@ -11,6 +11,35 @@ class SimulationConfig(BaseModel):
     seed:    int       = Field(42,            description="Random seed")
 
 
+class VehiclePosition(BaseModel):
+    vid: int
+    lat: float
+    lon: float
+    color: str = "#3B82F6"
+    waiting: bool = False
+    is_emergency: bool = False
+    lane: str = ""
+    heading: float = 0.0
+
+
+class RouteRecommendationData(BaseModel):
+    corridor: str
+    congestion_pct: float
+    severity: str
+    action: str
+    alternate_route: str
+    estimated_saving_s: float
+
+
+class EmergencyStatusData(BaseModel):
+    status: str
+    active_corridor: Optional[List[str]] = None
+    vehicle_type: Optional[str] = None
+    entry_lane: Optional[str] = None
+    response_time_s: Optional[float] = None
+    decision_log: List[str] = []
+
+
 class StepResponse(BaseModel):
     frame:           int
     time_s:          float
@@ -19,7 +48,14 @@ class StepResponse(BaseModel):
     avg_wait_s:      float
     throughput_pm:   float
     congestion_pct:  float
+    avg_speed_kmh:   float = 0.0
+    fuel_consumed_l: float = 0.0
+    co2_emitted_kg:  float = 0.0
     signal_states:   List[dict]
+    vehicles:        List[VehiclePosition] = []
+    route_recommendations: List[RouteRecommendationData] = []
+    emergency_status: Optional[EmergencyStatusData] = None
+    agent_log:       List[str] = []
 
 
 class EmergencyRequest(BaseModel):

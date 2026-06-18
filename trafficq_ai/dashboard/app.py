@@ -1,48 +1,58 @@
 """
 TRAFFICQ AI — Streamlit Dashboard
-Real-time visualisation of the multi-agent traffic system.
+Real-time visualisation of the multi-agent traffic system with Premium Map.
 Run:  streamlit run dashboard/app.py
 """
 from __future__ import annotations
 import time
+import json
 import streamlit as st
-import plotly.graph_objects as go
+import streamlit.components.v1 as components
 import plotly.express as px
 import pandas as pd
-import numpy as np
-import sys, os
-sys.path.insert(0, os.path.dirname(os.path.dirname(__file__)))
+import requests
 
-from simulation.engine import TrafficSimulation, LANE_DEFS
-from agents.signal_optimizer   import SignalOptimizerAgent
-from agents.route_recommender  import RouteRecommenderAgent
-from agents.emergency_priority import EmergencyPriorityAgent
+# ─── Configuration ────────────────────────────────────────────────────────────
 
-# ─── Page config ──────────────────────────────────────────────────────────────
+API_URL = "http://127.0.0.1:8000"
+WS_URL  = "ws://127.0.0.1:8000/ws/state"
 
 st.set_page_config(
     page_title = "TRAFFICQ AI",
     page_icon  = "🚦",
     layout     = "wide",
+    initial_sidebar_state="expanded"
 )
 
-# ─── Session state ────────────────────────────────────────────────────────────
+# ─── API Helpers ──────────────────────────────────────────────────────────────
 
-if "sim"   not in st.session_state:
-    st.session_state.sim        = None
-    st.session_state.sig_agent  = SignalOptimizerAgent()
-    st.session_state.rte_agent  = RouteRecommenderAgent()
-    st.session_state.emg_agent  = EmergencyPriorityAgent()
-    st.session_state.running    = False
-    st.session_state.frame_log  = []
-    st.session_state.emerg_log  = []
+def fetch_health():
+    try:
+        return requests.get(f"{API_URL}/health", timeout=2).json()
+    except:
+        return None
 
-# ─── Sidebar controls ─────────────────────────────────────────────────────────
+def configure_sim(mode, density, fps=20):
+    payload = {"mode": mode, "density": density, "fps": fps}
+    requests.post(f"{API_URL}/simulation/configure", json=payload)
+
+def dispatch_emergency(vehicle_type, entry_lane, vid):
+    payload = {"vehicle_type": vehicle_type, "entry_lane": entry_lane, "vehicle_id": vid}
+    requests.post(f"{API_URL}/emergency", json=payload)
+
+# ─── Sidebar Controls ─────────────────────────────────────────────────────────
 
 with st.sidebar:
     st.image("https://img.icons8.com/fluency/64/traffic-light.png", width=48)
     st.title("TRAFFICQ AI")
     st.caption("Autonomous Emergency & Smart Traffic Intelligence")
+    
+    health = fetch_health()
+    if health:
+        st.success(f"Backend API: **Online** ({health['mode']})")
+    else:
+        st.error("Backend API: **Offline** (Ensure FastAPI is running)")
+        
     st.divider()
 
     mode = st.selectbox("Signal mode", ["adaptive", "static"])
@@ -64,154 +74,381 @@ with st.sidebar:
     st.divider()
     col1, col2 = st.columns(2)
     with col1:
-        if st.button("▶ Start", use_container_width=True, type="primary"):
-            st.session_state.sim = TrafficSimulation(
-                mode=mode, density=[ns1, ns2, ew1, ew2]
-            )
-            st.session_state.running   = True
-            st.session_state.frame_log = []
+        if st.button("▶ Apply / Reset", use_container_width=True, type="primary"):
+            configure_sim(mode, [ns1, ns2, ew1, ew2])
+            st.success("Simulation configured!")
     with col2:
         if st.button("⏹ Stop", use_container_width=True):
-            st.session_state.running = False
+            configure_sim("static", [0, 0, 0, 0])
 
     st.divider()
-    st.markdown("**Agent 03 — Emergency**")
-    e_lane = st.selectbox("Entry lane", list(LANE_DEFS.keys()), index=0)
+    st.markdown("**Agent 03 — Emergency Dispatch**")
+    e_lane = st.selectbox("Entry lane", ["NB_col1", "NB_col2", "SB_col1", "SB_col2", "EB_top", "EB_bottom", "WB_top", "WB_bottom"], index=0)
     e_type = st.selectbox("Vehicle type", ["ambulance", "fire", "police"])
-    if st.button("🚨 Dispatch Emergency", use_container_width=True):
-        sim = st.session_state.sim
-        if sim:
-            import random
-            vid = random.randint(10, 99)
-            event = st.session_state.emg_agent.detect(
-                sim, vehicle_id=vid, vehicle_type=e_type, entry_lane=e_lane
-            )
-            st.session_state.emerg_log.append(event.explanation)
+    if st.button("🚨 Dispatch Emergency Vehicle", use_container_width=True):
+        import random
+        dispatch_emergency(e_type, e_lane, random.randint(10, 99))
+        st.toast(f"Dispatched {e_type} on {e_lane}!", icon="🚨")
 
-# ─── Main layout ──────────────────────────────────────────────────────────────
 
-st.markdown("## 🚦 TRAFFICQ AI — Live Dashboard")
+# ─── Main Layout ──────────────────────────────────────────────────────────────
 
-kpi0, kpi1, kpi2, kpi3, kpi4 = st.columns(5)
-sig_col, agent_col = st.columns([3, 2])
-chart_col1, chart_col2 = st.columns(2)
-log_col1, log_col2 = st.columns(2)
+st.markdown("## 🚦 TRAFFICQ AI — Live Command Center")
 
-# ─── Simulation Step ──────────────────────────────────────────────────────────
+map_col, stats_col = st.columns([2.5, 1])
 
-sim = st.session_state.sim
+with map_col:
+    # Premium MapLibre HTML Component featuring Uber-like dynamic path visualization
+    MAP_HTML = """
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="utf-8">
+        <title>TRAFFICQ AI Live Map</title>
+        <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no">
+        <script src="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.js"></script>
+        <link href="https://unpkg.com/maplibre-gl@3.3.1/dist/maplibre-gl.css" rel="stylesheet" />
+        <style>
+            body { margin: 0; padding: 0; background-color: #0b0f19; font-family: 'Inter', sans-serif; }
+            #map { position: absolute; top: 0; bottom: 0; width: 100%; border-radius: 12px; }
+            .overlay-panel {
+                position: absolute;
+                top: 15px;
+                left: 15px;
+                background: rgba(15, 23, 42, 0.85);
+                backdrop-filter: blur(8px);
+                border: 1px solid rgba(255,255,255,0.1);
+                color: #f8fafc;
+                padding: 12px 18px;
+                border-radius: 8px;
+                font-size: 13px;
+                box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+                z-index: 10;
+            }
+            .emerg-panel {
+                position: absolute;
+                bottom: 25px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: rgba(220, 38, 38, 0.9);
+                backdrop-filter: blur(10px);
+                color: white;
+                padding: 10px 20px;
+                border-radius: 30px;
+                font-weight: 600;
+                font-size: 14px;
+                box-shadow: 0 0 15px rgba(220, 38, 38, 0.6);
+                display: none;
+                z-index: 10;
+                transition: all 0.3s ease;
+                white-space: nowrap;
+            }
+            .emerg-panel.active { display: block; animation: pulse 2s infinite; }
+            @keyframes pulse {
+                0% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0.7); }
+                70% { box-shadow: 0 0 0 10px rgba(220, 38, 38, 0); }
+                100% { box-shadow: 0 0 0 0 rgba(220, 38, 38, 0); }
+            }
+            .kpi-row { display: flex; gap: 15px; margin-top: 5px; }
+            .kpi-item { display: flex; flex-direction: column; }
+            .kpi-val { font-size: 18px; font-weight: bold; color: #38bdf8; }
+            .kpi-lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+        </style>
+    </head>
+    <body>
+        <div id="map"></div>
+        <div class="overlay-panel" id="stats">Connecting to simulation...</div>
+        <div class="emerg-panel" id="emerg-alert">🚨 REROUTING: GREEN CORRIDOR ACTIVE</div>
 
-if st.session_state.running and sim:
-    # Step simulation + poll emergency agent
-    for _ in range(2):
-        sim.step()
-    st.session_state.emg_agent.poll(sim)
+        <script>
+            // Use Carto dark matter for a sleek, premium base map
+            const map = new maplibregl.Map({
+                container: 'map',
+                style: 'https://basemaps.cartocdn.com/gl/dark-matter-gl-style/style.json',
+                center: [-74.0060, 40.7128],
+                zoom: 15.5,
+                pitch: 45,
+                bearing: 0
+            });
 
-    metrics = sim.get_metrics()
-    states  = sim.get_signal_state()
+            // WebSocket URL injected via Python string replacement
+            const wsUrl = 'INJECT_WS_URL_HERE';
+            let ws;
+            
+            // Map coordinates for intersections
+            const BASE_LAT = 40.7128;
+            const BASE_LON = -74.0060;
+            const OFFSET = 0.005;
+            const INTERSECTIONS = {
+                "NW": [BASE_LON - OFFSET, BASE_LAT + OFFSET],
+                "NE": [BASE_LON + OFFSET, BASE_LAT + OFFSET],
+                "SW": [BASE_LON - OFFSET, BASE_LAT - OFFSET],
+                "SE": [BASE_LON + OFFSET, BASE_LAT - OFFSET],
+            };
 
-    # Log a frame snapshot
-    st.session_state.frame_log.append(metrics)
-    if len(st.session_state.frame_log) > 300:
-        st.session_state.frame_log.pop(0)
+            function connectWebSocket() {
+                ws = new WebSocket(wsUrl);
+                ws.onopen = () => {
+                    document.getElementById('stats').innerHTML = "Connected to Agent Subsystem.";
+                };
+                
+                ws.onmessage = (event) => {
+                    const data = JSON.parse(event.data);
+                    updateMap(data);
+                    updateUI(data);
+                };
+                
+                ws.onclose = () => {
+                    document.getElementById('stats').innerHTML = "Connection lost. Reconnecting...";
+                    setTimeout(connectWebSocket, 1000);
+                };
+            }
 
-    # ── Agent 01 recommendations ──────────────────────────────────────────────
-    sig_recs   = st.session_state.sig_agent.compute_recommendations(states)
-    route_recs = st.session_state.rte_agent.analyse(states)
-    st.session_state.sig_agent.apply_recommendations(sim, sig_recs)
+            map.on('load', () => {
+                // 1. Add Intersection Nodes
+                map.addSource('intersections', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+                map.addLayer({
+                    id: 'intersections-layer',
+                    type: 'circle',
+                    source: 'intersections',
+                    paint: {
+                        'circle-radius': 12,
+                        'circle-color': '#1e293b',
+                        'circle-stroke-width': 2,
+                        'circle-stroke-color': '#475569'
+                    }
+                });
 
-elif sim:
-    metrics = sim.get_metrics()
-    states  = sim.get_signal_state()
-    sig_recs   = st.session_state.sig_agent.compute_recommendations(states)
-    route_recs = st.session_state.rte_agent.analyse(states)
-else:
-    metrics = {"total_vehicles": 0, "waiting_count": 0, "avg_wait_s": 0.0, "congestion_pct": 0.0, "throughput_pm": 0.0}
-    states = []
-    sig_recs = []
-    route_recs = []
+                // 2. Add Road Network Background
+                map.addSource('roads-bg', { type: 'geojson', data: { type: 'FeatureCollection', features: [] } });
+                map.addLayer({
+                    id: 'roads-bg-layer',
+                    type: 'line',
+                    source: 'roads-bg',
+                    layout: { 'line-cap': 'round', 'line-join': 'round' },
+                    paint: { 'line-width': 8, 'line-color': '#1e293b' }
+                }, 'intersections-layer');
 
-# ── KPIs ─────────────────────────────────────────────────────────────────
-with kpi0: st.metric("Vehicles",    metrics["total_vehicles"])
-with kpi1: st.metric("Waiting",     metrics["waiting_count"])
-with kpi2: st.metric("Avg wait",    f"{metrics['avg_wait_s']:.1f}s")
-with kpi3: st.metric("Congestion",  f"{metrics['congestion_pct']:.0f}%")
-with kpi4: st.metric("Throughput",  f"{metrics['throughput_pm']:.0f}/min")
+                // 3. Add Premium Dynamic Emergency Corridor (Uber-style)
+                map.addSource('corridor-path', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+                
+                // Glow effect for corridor
+                map.addLayer({
+                    id: 'corridor-glow',
+                    type: 'line',
+                    source: 'corridor-path',
+                    layout: { 'line-cap': 'round', 'line-join': 'round' },
+                    paint: {
+                        'line-width': 12,
+                        'line-color': '#ef4444',
+                        'line-opacity': 0.3,
+                        'line-blur': 8
+                    }
+                });
+                
+                // Solid core line for corridor
+                map.addLayer({
+                    id: 'corridor-core',
+                    type: 'line',
+                    source: 'corridor-path',
+                    layout: { 'line-cap': 'round', 'line-join': 'round' },
+                    paint: {
+                        'line-width': 4,
+                        'line-color': '#10b981', // Green for green corridor
+                        'line-opacity': 0.9,
+                        'line-dasharray': [2, 1] // Animated dashed line effect
+                    }
+                });
 
-# ── Signal status ─────────────────────────────────────────────────────────
-if states:
-    with sig_col:
-        st.markdown("### Signal State — Agent 01")
-        df_sig = pd.DataFrame(states)[
-            ["name","phase","ns_green","ew_green","ns_queue","ew_queue","ns_score","ew_score","congestion","override"]
-        ]
-        df_sig.columns = ["Intersection","Phase","NS Green (s)","EW Green (s)",
-                          "NS Queue","EW Queue","NS Priority","EW Priority","Congestion %","Override"]
-        st.dataframe(df_sig, use_container_width=True, hide_index=True)
+                // 4. Add Vehicles
+                map.addSource('vehicles', {
+                    type: 'geojson',
+                    data: { type: 'FeatureCollection', features: [] }
+                });
+                
+                // Regular vehicles
+                map.addLayer({
+                    id: 'vehicles-layer',
+                    type: 'circle',
+                    source: 'vehicles',
+                    filter: ['!=', ['get', 'is_emergency'], true],
+                    paint: {
+                        'circle-radius': ['case', ['==', ['get', 'waiting'], true], 4, 3],
+                        'circle-color': ['get', 'color'],
+                        'circle-opacity': 0.8
+                    }
+                });
+                
+                // Emergency vehicles with glow
+                map.addLayer({
+                    id: 'emergency-vehicles',
+                    type: 'circle',
+                    source: 'vehicles',
+                    filter: ['==', ['get', 'is_emergency'], true],
+                    paint: {
+                        'circle-radius': 8,
+                        'circle-color': '#ef4444',
+                        'circle-stroke-width': 3,
+                        'circle-stroke-color': '#ffffff'
+                    }
+                });
 
-# ── Agent status panels ───────────────────────────────────────────────────
-with agent_col:
-    st.markdown("### Agent Status")
-    for r in route_recs:
-        colour = {"LOW":"🟢","MODERATE":"🟡","HIGH":"🟠","CRITICAL":"🔴"}.get(r.severity,"⚪")
-        st.write(f"{colour} **{r.corridor}** — {r.congestion_pct:.0f}% {r.severity}")
-    st.divider()
-    emg = st.session_state.emg_agent
-    st.write(f"🚨 Agent 03 Status: **{emg.status.value}**")
+                // Initialize static features
+                initStaticMapFeatures();
+                connectWebSocket();
+                
+                // Animate dashed line
+                let dashOffset = 0;
+                function animateDashArray() {
+                    if (map.getLayer('corridor-core')) {
+                        dashOffset = (dashOffset - 0.1) % 3;
+                        map.setPaintProperty('corridor-core', 'line-dasharray', [2, 1]);
+                    }
+                    requestAnimationFrame(animateDashArray);
+                }
+                animateDashArray();
+            });
+
+            function initStaticMapFeatures() {
+                // Intersections
+                const intFeatures = Object.keys(INTERSECTIONS).map(k => ({
+                    type: 'Feature',
+                    properties: { name: k },
+                    geometry: { type: 'Point', coordinates: INTERSECTIONS[k] }
+                }));
+                map.getSource('intersections').setData({ type: 'FeatureCollection', features: intFeatures });
+
+                // Simple grid roads
+                const roadFeatures = [
+                    { type: 'Feature', geometry: { type: 'LineString', coordinates: [ [BASE_LON - OFFSET, BASE_LAT + OFFSET*2], [BASE_LON - OFFSET, BASE_LAT - OFFSET*2] ] } },
+                    { type: 'Feature', geometry: { type: 'LineString', coordinates: [ [BASE_LON + OFFSET, BASE_LAT + OFFSET*2], [BASE_LON + OFFSET, BASE_LAT - OFFSET*2] ] } },
+                    { type: 'Feature', geometry: { type: 'LineString', coordinates: [ [BASE_LON - OFFSET*2, BASE_LAT + OFFSET], [BASE_LON + OFFSET*2, BASE_LAT + OFFSET] ] } },
+                    { type: 'Feature', geometry: { type: 'LineString', coordinates: [ [BASE_LON - OFFSET*2, BASE_LAT - OFFSET], [BASE_LON + OFFSET*2, BASE_LAT - OFFSET] ] } }
+                ];
+                map.getSource('roads-bg').setData({ type: 'FeatureCollection', features: roadFeatures });
+            }
+
+            function updateMap(data) {
+                if (!map.isStyleLoaded()) return;
+
+                // Update vehicles
+                const vFeatures = data.vehicles.map(v => ({
+                    type: 'Feature',
+                    geometry: { type: 'Point', coordinates: [v.lon, v.lat] },
+                    properties: {
+                        vid: v.vid,
+                        color: v.color,
+                        waiting: v.waiting,
+                        is_emergency: v.is_emergency
+                    }
+                }));
+                map.getSource('vehicles').setData({ type: 'FeatureCollection', features: vFeatures });
+
+                // Update Green Corridor path
+                const emerg = data.emergency_status;
+                const emergPanel = document.getElementById('emerg-alert');
+                
+                if (emerg && emerg.status === 'CORRIDOR_ACTIVE' && emerg.active_corridor && emerg.active_corridor.length >= 2) {
+                    const pathCoords = emerg.active_corridor.map(node => INTERSECTIONS[node]);
+                    
+                    // Construct smooth line for the corridor
+                    const corridorFeature = {
+                        type: 'Feature',
+                        geometry: { type: 'LineString', coordinates: pathCoords },
+                        properties: {}
+                    };
+                    map.getSource('corridor-path').setData({ type: 'FeatureCollection', features: [corridorFeature] });
+                    
+                    emergPanel.classList.add('active');
+                    emergPanel.innerHTML = `🚨 AI REROUTING: GREEN CORRIDOR ACTIVE [${emerg.active_corridor.join(' → ')}]`;
+                } else {
+                    map.getSource('corridor-path').setData({ type: 'FeatureCollection', features: [] });
+                    emergPanel.classList.remove('active');
+                }
+            }
+
+            function updateUI(data) {
+                const html = `
+                    <div style="font-weight: 600; margin-bottom: 8px;">TRAFFICQ AI Engine</div>
+                    <div class="kpi-row">
+                        <div class="kpi-item">
+                            <span class="kpi-val">${data.total_vehicles}</span>
+                            <span class="kpi-lbl">Vehicles</span>
+                        </div>
+                        <div class="kpi-item">
+                            <span class="kpi-val">${data.avg_speed_kmh.toFixed(1)}</span>
+                            <span class="kpi-lbl">Avg km/h</span>
+                        </div>
+                        <div class="kpi-item">
+                            <span class="kpi-val" style="color: ${data.congestion_pct > 60 ? '#ef4444' : '#38bdf8'}">${data.congestion_pct.toFixed(0)}%</span>
+                            <span class="kpi-lbl">Congestion</span>
+                        </div>
+                    </div>
+                `;
+                document.getElementById('stats').innerHTML = html;
+            }
+        </script>
+    </body>
+    </html>
+    """.replace("INJECT_WS_URL_HERE", WS_URL)
     
-    if emg.status.value == "CORRIDOR_ACTIVE" and emg.current_event:
-        event = emg.current_event
-        card_html = f"""
-        <div style="
-            background: rgba(239, 68, 68, 0.08);
-            border: 1px solid rgba(239, 68, 68, 0.25);
-            border-radius: 8px;
-            padding: 15px;
-            margin-top: 10px;
-            margin-bottom: 15px;
-            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.1);
-        ">
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px;">
-                <span style="font-weight: bold; color: #EF4444; font-size: 1.1em;">🚨 Active Green Corridor</span>
-                <span style="background: rgba(239, 68, 68, 0.2); color: #EF4444; padding: 2px 8px; border-radius: 12px; font-size: 0.8em; font-weight: bold;">
-                    Priority {event.priority}
-                </span>
-            </div>
-            <div style="font-size: 0.9em; color: #E2E8F0; line-height: 1.6;">
-                <strong>Vehicle:</strong> {event.vehicle_type.upper()} #{event.vehicle_id}<br/>
-                <strong>Selected Route:</strong> <code style="background: rgba(0,0,0,0.2); padding: 2px 4px; border-radius: 4px; color: #10B981;">{emg.selected_route_str}</code><br/>
-                <strong>Dynamic ETA:</strong> <span style="font-weight: bold; color: #F59E0B; font-size: 1.1em;">{emg.emergency_eta:.1f}s</span><br/>
-                <strong>Corridor Length:</strong> {emg.corridor_length_m:.0f} meters<br/>
-                <strong>Response Improvement:</strong> <span style="color: #10B981; font-weight: bold;">{emg.response_time_improvement_pct:.0f}% faster</span><br/>
-                <strong>Delay Reduced:</strong> <span style="color: #10B981; font-weight: bold;">~{emg.predicted_delay_reduction_s:.0f}s saved</span>
-            </div>
-            <hr style="border: 0; border-top: 1px solid rgba(255,255,255,0.1); margin: 10px 0;"/>
-            <div style="font-size: 0.8em; font-family: monospace; color: #94A3B8; background: rgba(0,0,0,0.15); padding: 8px; border-radius: 4px; white-space: pre-line;">
-                {emg.latest_explanation}
-            </div>
-        </div>
-        """
-        st.markdown(card_html, unsafe_allow_html=True)
+    components.html(MAP_HTML, height=600)
+
+with stats_col:
+    st.markdown("### Agent Intelligence")
+    
+    # We fetch the latest state from the REST API to render the Streamlit UI side of things
+    state = None
+    try:
+        resp = requests.get(f"{API_URL}/simulation/state", timeout=2)
+        if resp.status_code == 200:
+            state = resp.json()
+    except:
+        pass
         
-    st.markdown("##### Recent Corridor Logs")
-    for msg in st.session_state.emerg_log[-3:]:
-        st.caption(msg.replace("\n", " | "))
+    if state:
+        st.markdown("##### 🚦 Signal Optimization (Agent 1)")
+        df_sig = pd.DataFrame(state["signal_states"])
+        if not df_sig.empty:
+            df_sig = df_sig[["name", "phase", "ns_green", "ew_green", "override"]]
+            df_sig.columns = ["Node", "Phase", "NS(s)", "EW(s)", "OVR"]
+            st.dataframe(df_sig, hide_index=True, use_container_width=True)
+            
+        st.markdown("##### 🗺️ Route Recommendations (Agent 2)")
+        if state.get("route_recommendations"):
+            for r in state["route_recommendations"]:
+                col_icon = {"LOW":"🟢","MODERATE":"🟡","HIGH":"🟠","CRITICAL":"🔴"}.get(r["severity"],"⚪")
+                st.caption(f"{col_icon} **{r['corridor']}**: {r['action']}")
+        else:
+            st.caption("No active routing advisories.")
+            
+        st.markdown("##### 🚨 Emergency Priority (Agent 3)")
+        emg = state.get("emergency_status")
+        if emg and emg["status"] == "CORRIDOR_ACTIVE":
+            st.error(f"**ACTIVE:** {emg['vehicle_type'].upper()} entering from {emg['entry_lane']}", icon="🚨")
+            path_str = " → ".join(emg['active_corridor'])
+            st.success(f"**AI Reroute Path:** {path_str}", icon="🗺️")
+            st.caption("Signals overriden along green corridor.")
+        else:
+            st.info("Monitoring for emergency vehicles...", icon="📡")
+            
+        st.markdown("##### 🧠 Agent Action Log")
+        log_html = "<div style='height: 200px; overflow-y: auto; background-color: #0f172a; padding: 10px; border-radius: 8px; border: 1px solid #334155; font-family: monospace; font-size: 0.85em; color: #a5b4fc;'>"
+        for log in reversed(state.get("agent_log", [])):
+            log_html += f"<div style='margin-bottom: 4px; border-bottom: 1px solid #1e293b; padding-bottom: 2px;'>{log}</div>"
+        log_html += "</div>"
+        if state.get("agent_log"):
+            st.markdown(log_html, unsafe_allow_html=True)
+        else:
+            st.caption("No agent activity recorded yet.")
 
-# ── History charts ────────────────────────────────────────────────────────
-if len(st.session_state.frame_log) > 2:
-    df_h = pd.DataFrame(st.session_state.frame_log)
-    with chart_col1:
-        fig = px.line(df_h, y="avg_wait_s", title="Avg Wait Time (s)",
-                      labels={"avg_wait_s":"seconds","index":"frame"})
-        fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig, use_container_width=True)
-    with chart_col2:
-        fig = px.line(df_h, y="congestion_pct", title="Congestion Index (%)",
-                      color_discrete_sequence=["#ef4444"],
-                      labels={"congestion_pct":"%","index":"frame"})
-        fig.update_layout(height=220, margin=dict(l=0,r=0,t=30,b=0))
-        st.plotly_chart(fig, use_container_width=True)
-
-if st.session_state.running:
-    time.sleep(0.05)
+# Trigger auto-refresh loop for Streamlit to fetch REST data periodically
+if fetch_health():
+    time.sleep(1.0)
     st.rerun()

@@ -12,7 +12,7 @@ from typing import Optional
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
-from simulation.engine import TrafficSimulation
+from simulation.engine import TrafficSimulation, LANE_DEFS
 from agents.signal_optimizer   import SignalOptimizerAgent
 from agents.route_recommender  import RouteRecommenderAgent
 from agents.emergency_priority import EmergencyPriorityAgent
@@ -20,6 +20,7 @@ from agents.orchestrator       import TrafficOrchestrator
 from api.models import (
     SimulationConfig, StepResponse, EmergencyRequest, EmergencyResponse,
     AnalysisRequest, AnalysisResponse, HealthResponse,
+    VehiclePosition, RouteRecommendationData, EmergencyStatusData,
 )
 
 # ─── Globals (one simulation instance per process) ────────────────────────────
@@ -29,6 +30,14 @@ _orch:  Optional[TrafficOrchestrator] = None
 _emerg: Optional[EmergencyPriorityAgent] = None
 
 _ws_clients: list[WebSocket] = []
+
+# Agent cache — run agents every ~40 frames to avoid per-frame overhead
+_agent_cache: dict = {
+    "sig_recs":   [],
+    "route_recs": [],
+    "agent_log":  [],
+    "last_frame": 0,
+}
 
 
 # ─── Lifespan ─────────────────────────────────────────────────────────────────
@@ -56,6 +65,38 @@ async def _simulation_loop() -> None:
             _sim.step()
             if _emerg:
                 _emerg.poll(_sim)
+
+            # Run agents every ~40 frames (~2s at 20fps)
+            if _orch and _sim.frame - _agent_cache["last_frame"] >= 40:
+                try:
+                    states = _sim.get_signal_state()
+                    sig_recs   = _orch.signal_agent.compute_recommendations(states)
+                    _orch.signal_agent.apply_recommendations(_sim, sig_recs)
+                    route_recs = _orch.route_agent.analyse(states)
+
+                    _agent_cache["sig_recs"]   = sig_recs
+                    _agent_cache["route_recs"] = route_recs
+                    _agent_cache["last_frame"] = _sim.frame
+
+                    # Build agent activity log entries
+                    t = _sim.time_s
+                    for r in sig_recs:
+                        _agent_cache["agent_log"].append(
+                            f"[{t:.0f}s] Signal Agent: {r.intersection} -> "
+                            f"NS {r.ns_green:.0f}s / EW {r.ew_green:.0f}s "
+                            f"(conf {r.confidence:.0%})"
+                        )
+                    for r in route_recs:
+                        icon = {"LOW": "OK", "MODERATE": "WARN", "HIGH": "HIGH", "CRITICAL": "CRIT"}.get(r.severity, "?")
+                        _agent_cache["agent_log"].append(
+                            f"[{t:.0f}s] Route Agent: {r.corridor} — "
+                            f"{r.severity} ({r.congestion_pct:.0f}%) {r.action[:60]}"
+                        )
+                    # Keep only last 30 log entries
+                    _agent_cache["agent_log"] = _agent_cache["agent_log"][-30:]
+                except Exception:
+                    pass
+
             if _ws_clients:
                 state = _build_step_response(_sim)
                 msg   = state.model_dump_json()
@@ -199,8 +240,96 @@ def create_app() -> FastAPI:
 
 # ─── Helper ───────────────────────────────────────────────────────────────────
 
+# Geo constants for vehicle position mapping
+_BASE_LAT, _BASE_LON = 40.7128, -74.0060
+_OFFSET = 0.005
+
+_INTERSECTIONS_GEO = {
+    "NW": (_BASE_LAT + _OFFSET, _BASE_LON - _OFFSET),
+    "NE": (_BASE_LAT + _OFFSET, _BASE_LON + _OFFSET),
+    "SW": (_BASE_LAT - _OFFSET, _BASE_LON - _OFFSET),
+    "SE": (_BASE_LAT - _OFFSET, _BASE_LON + _OFFSET),
+}
+
+
+def _vehicle_to_geo(v) -> VehiclePosition:
+    """Map a vehicle's lane + progress to lat/lon for map rendering."""
+    l = LANE_DEFS[v.lane]
+    xd = l.get("xd", l.get("yd", 1))
+    prog = v.progress
+
+    if l["dir"] == "H":
+        inters = l["inters"]
+        lat1, lon1 = _INTERSECTIONS_GEO[inters[0]]
+        lat_offset = l["lat"] * _OFFSET * 0.3
+        if xd > 0:
+            lon = (_BASE_LON - _OFFSET * 2) + prog * (_OFFSET * 4)
+        else:
+            lon = (_BASE_LON + _OFFSET * 2) - prog * (_OFFSET * 4)
+        lat = lat1 + lat_offset
+        heading = 90.0 if xd > 0 else 270.0
+    else:
+        inters = l["inters"]
+        lat1, lon1 = _INTERSECTIONS_GEO[inters[0]]
+        lon_offset = l["lat"] * _OFFSET * 0.3
+        if l.get("yd", 1) > 0:
+            lat = (_BASE_LAT + _OFFSET * 2) - prog * (_OFFSET * 4)
+            heading = 180.0
+        else:
+            lat = (_BASE_LAT - _OFFSET * 2) + prog * (_OFFSET * 4)
+            heading = 0.0
+        lon = lon1 + lon_offset
+
+    return VehiclePosition(
+        vid=v.vid, lat=lat, lon=lon, color=v.color,
+        waiting=v.waiting, is_emergency=v.is_emergency,
+        lane=v.lane, heading=heading,
+    )
+
+
 def _build_step_response(sim: TrafficSimulation) -> StepResponse:
     m = sim.get_metrics()
+
+    # ── Vehicle geo-positions ────────────────────────────────────────────
+    vehicles = [_vehicle_to_geo(v) for v in sim.vehicles]
+
+    # ── Approximate speed / fuel / CO2 ───────────────────────────────────
+    moving = [v for v in sim.vehicles if not v.waiting]
+    if moving:
+        avg_spd = sum(v.speed * sim.fps for v in moving) / len(moving)
+        avg_speed_kmh = round(avg_spd * 180, 1)  # scale to km/h
+    else:
+        avg_speed_kmh = 0.0
+
+    waiting_count = m["waiting_count"]
+    fuel = round(waiting_count * 0.5 * sim.time_s / 3600, 3)
+    co2  = round(fuel * 2.3, 3)
+
+    # ── Route recommendations from agent cache ──────────────────────────
+    route_recs_data = []
+    for r in _agent_cache.get("route_recs", []):
+        route_recs_data.append(RouteRecommendationData(
+            corridor=r.corridor,
+            congestion_pct=r.congestion_pct,
+            severity=r.severity,
+            action=r.action,
+            alternate_route=r.alternate_route,
+            estimated_saving_s=r.estimated_saving_s,
+        ))
+
+    # ── Emergency status ─────────────────────────────────────────────────
+    emerg_status = None
+    if _emerg:
+        evt = _emerg.current_event
+        emerg_status = EmergencyStatusData(
+            status=_emerg.status.value,
+            active_corridor=evt.corridor_intersections if evt else None,
+            vehicle_type=evt.vehicle_type if evt else None,
+            entry_lane=evt.entry_lane if evt else None,
+            response_time_s=evt.response_time_s if evt else None,
+            decision_log=_emerg.decision_log[-10:],
+        )
+
     return StepResponse(
         frame           = m["frame"],
         time_s          = m["time_s"],
@@ -209,7 +338,14 @@ def _build_step_response(sim: TrafficSimulation) -> StepResponse:
         avg_wait_s      = round(m["avg_wait_s"], 2),
         throughput_pm   = round(m["throughput_pm"], 1),
         congestion_pct  = round(m["congestion_pct"], 1),
+        avg_speed_kmh   = avg_speed_kmh,
+        fuel_consumed_l = fuel,
+        co2_emitted_kg  = co2,
         signal_states   = sim.get_signal_state(),
+        vehicles        = vehicles,
+        route_recommendations = route_recs_data,
+        emergency_status      = emerg_status,
+        agent_log             = _agent_cache.get("agent_log", [])[-15:],
     )
 
 
