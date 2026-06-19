@@ -227,6 +227,9 @@ class EmergencyPriorityAgent:
         Call every simulation step while corridor is active.
         Predicts ETA and preemptively clears intersections, releasing them node-by-node.
         """
+        # Check if RESOLVED status should transition to STANDBY
+        self._check_resolved_timeout(sim)
+        
         if self.status not in (EmergencyStatus.CORRIDOR, EmergencyStatus.CLEARING):
             return
 
@@ -470,16 +473,25 @@ class EmergencyPriorityAgent:
                     inter.override = False
                     inter.override_priority = 0
             
-            self.current_event = None
+            # Keep current_event alive so dashboard can display time-saved
+            # It will be cleared when transitioning to STANDBY
 
         sim.release_corridor()
         self.status = EmergencyStatus.RESOLVED
+        self._resolved_at = sim.time_s
         
         # Reset metric values
         self.emergency_eta = 0.0
         self.selected_route_str = "N/A"
         
-        self.status = EmergencyStatus.STANDBY
+        # Do NOT immediately go to STANDBY — let poll() handle it after a delay
+
+    def _check_resolved_timeout(self, sim) -> None:
+        """Transition from RESOLVED to STANDBY after a delay so the dashboard can show results."""
+        if self.status == EmergencyStatus.RESOLVED and hasattr(self, '_resolved_at'):
+            if sim.time_s - self._resolved_at > 10.0:  # Show resolved status for 10 seconds
+                self.status = EmergencyStatus.STANDBY
+                self.current_event = None
 
     def _log(self, msg: str) -> None:
         ts  = time.strftime("%H:%M:%S")
@@ -487,3 +499,4 @@ class EmergencyPriorityAgent:
         self.decision_log.append(entry)
         if len(self.decision_log) > 200:
             self.decision_log.pop(0)
+

@@ -3,16 +3,15 @@ TRAFFICQ AI — Comparison Video Generator  (fixed for matplotlib 3.9)
 Side-by-side: Static fixed-timer  vs  TRAFFICQ AI Adaptive Agents
 """
 from __future__ import annotations
-import os, sys, random, math
-from dataclasses import dataclass, field
+import os, random
+from dataclasses import dataclass
 from typing import Dict, List, Tuple
 
 import numpy as np
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
-import matplotlib.patches as mpatches
-from matplotlib.patches import Rectangle, Circle, Arc, FancyBboxPatch
+from matplotlib.patches import Rectangle, Circle, Arc
 from matplotlib.animation import FuncAnimation, FFMpegWriter, PillowWriter
 import matplotlib.patheffects as pe
 from mpl_toolkits.axes_grid1.inset_locator import inset_axes

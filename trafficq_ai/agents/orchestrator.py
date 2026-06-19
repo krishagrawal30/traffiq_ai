@@ -12,10 +12,6 @@ from typing import Any, Dict, List, Optional
 # rule-based quick_analysis() when LangChain is unavailable or broken.
 _LANGCHAIN_AVAILABLE = False
 try:
-    from langchain.agents import AgentExecutor, create_openai_tools_agent
-    from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-    from langchain.tools import StructuredTool
-    from langchain_openai import AzureChatOpenAI, ChatOpenAI
     from pydantic import BaseModel, Field
     _LANGCHAIN_AVAILABLE = True
 except Exception:
@@ -65,11 +61,11 @@ class TrafficOrchestrator:
     """
 
     SYSTEM_PROMPT = """You are TRAFFICQ AI, an autonomous traffic management system.
-You manage a 2×2 intersection grid (NW, NE, SW, SE) using three specialist agents:
+You manage a 2x2 intersection grid (NW, NE, SW, SE) using three specialist agents:
 
-• Agent 01 (signal_optimizer)   — adjusts green-light timing per intersection.
-• Agent 02 (route_recommender)  — recommends traffic diversions when corridors congest.
-• Agent 03 (emergency_priority) — creates automated green corridors for first responders.
+- Agent 01 (signal_optimizer)   -- adjusts green-light timing per intersection.
+- Agent 02 (route_recommender)  -- recommends traffic diversions when corridors congest.
+- Agent 03 (emergency_priority) -- creates automated green corridors for first responders.
 
 Your job:
 1. Analyse the provided traffic state.
@@ -94,9 +90,7 @@ Safety constraints:
         self.route_agent     = route_agent     or RouteRecommenderAgent()
         self.emergency_agent = emergency_agent or EmergencyPriorityAgent()
 
-        self._llm      = self._build_llm()
-        self._tools    = self._build_tools()
-        self._executor = self._build_executor()
+        self._llm = self._build_llm()
 
     # ── Public ────────────────────────────────────────────────────────────────
 
@@ -105,43 +99,129 @@ Safety constraints:
         Run the orchestrator with a natural-language request and current state.
         Returns the LLM's final plain-English response.
         """
-        state_str = json.dumps(signal_states, indent=2)
-        result = self._executor.invoke({
-            "input": user_message,
-            "state": state_str,
-        })
-        return result.get("output", "No response generated.")
+        # Always build the context from the live agents first
+        context = self.quick_analysis(signal_states)
+
+        if not self._llm:
+            return context
+
+        prompt = (
+            f"{self.SYSTEM_PROMPT}\n\n"
+            f"Here is the raw data from the simulation right now:\n"
+            f"{json.dumps(signal_states, indent=2)}\n\n"
+            f"Here are the exact decisions the backend agents just made:\n"
+            f"{context}\n\n"
+            f"The user is asking: '{user_message}'\n\n"
+            f"Please respond as TRAFFICQ AI. Explain the current situation and the agents' decisions "
+            f"in a professional, clear, and concise manner without outputting raw JSON. Make sure to "
+            f"address the user's specific question."
+        )
+
+        try:
+            response = self._llm.invoke(prompt)
+            return response.content
+        except Exception as e:
+            # On ANY LLM error (quota, timeout, network), return the clean analysis
+            return context
 
     def quick_analysis(self, signal_states: List[dict]) -> str:
         """
-        Fast path: no LLM call — just run all three agents and summarise.
-        Useful when LLM is not configured.
+        Structured agent analysis that mirrors the sidebar data exactly.
+        Always produces clean, professional output regardless of LLM availability.
         """
         sig_recs   = self.signal_agent.compute_recommendations(signal_states)
         route_recs = self.route_agent.analyse(signal_states)
 
         lines = []
-        lines.append("── Agent 01: Signal Optimization ──")
+
+        # ── Header with timestamp ────────────────────────────────────────
+        if self.sim:
+            lines.append(f"TRAFFICQ AI Analysis Report  |  T = {self.sim.time_s:.1f}s")
+        else:
+            lines.append("TRAFFICQ AI Analysis Report")
+        lines.append("=" * 50)
+
+        # ── Agent 01: Signal Optimization ────────────────────────────────
+        lines.append("")
+        lines.append("AGENT 01: Signal Optimization")
+        lines.append("-" * 40)
         for r in sig_recs:
-            lines.append(f"  {r.intersection}: NS={r.ns_green:.0f}s  EW={r.ew_green:.0f}s  [{r.confidence:.0%}]")
-            lines.append(f"    {r.reasoning}")
+            lines.append(f"  [{r.intersection}]  NS = {r.ns_green:.0f}s  |  EW = {r.ew_green:.0f}s  |  Confidence: {r.confidence:.0%}")
+            lines.append(f"    > {r.reasoning}")
 
-        lines.append("\n── Agent 02: Route Recommendations ──")
-        for r in route_recs:
-            lines.append(f"  {r.corridor:<14} {r.congestion_pct:>5.1f}%  [{r.severity}]  {r.action}")
+        # ── Agent 02: Route Recommendations ──────────────────────────────
+        lines.append("")
+        lines.append("AGENT 02: Route Recommendations")
+        lines.append("-" * 40)
+        if route_recs:
+            for r in route_recs:
+                severity_icon = {"LOW": "OK", "MODERATE": "WATCH", "HIGH": "DIVERT", "CRITICAL": "ALERT"}.get(r.severity, "??")
+                lines.append(f"  [{r.corridor:<12}]  Congestion: {r.congestion_pct:>5.1f}%  |  Status: {r.severity} ({severity_icon})")
+                lines.append(f"    > {r.action}")
+                if r.alternate_route and r.severity in ("HIGH", "CRITICAL"):
+                    lines.append(f"    > Diverting to: {r.alternate_route}")
+        else:
+            lines.append("  All corridors flowing normally. No diversions needed.")
 
-        lines.append(f"\n── Agent 03: Emergency ──")
-        lines.append(f"  Status: {self.emergency_agent.status.value}")
+        # ── Agent 03: Emergency Priority ─────────────────────────────────
+        lines.append("")
+        lines.append("AGENT 03: Emergency Priority")
+        lines.append("-" * 40)
+
+        status_val = self.emergency_agent.status.value
+        evt = self.emergency_agent.current_event
+
+        if status_val in ["CORRIDOR_ACTIVE", "CLEARING"] and evt:
+            lines.append(f"  *** ACTIVE EMERGENCY ***")
+            lines.append(f"  Vehicle : {evt.vehicle_type.upper()} (ID: {evt.vehicle_id})")
+            lines.append(f"  Entry   : {evt.entry_lane}")
+            if evt.corridor_intersections:
+                path_str = " -> ".join(evt.corridor_intersections)
+                lines.append(f"  Route   : {path_str}")
+            eta = getattr(self.emergency_agent, 'emergency_eta', 0)
+            if eta:
+                lines.append(f"  ETA     : {eta:.1f}s")
+            lines.append(f"  Status  : GREEN CORRIDOR ACTIVE - All intersections on path overridden")
+            if evt.explanation:
+                lines.append(f"  AI Note : {evt.explanation[:200]}")
+
+        elif status_val == "RESOLVED" and evt:
+            lines.append(f"  Status  : RESOLVED (Emergency Cleared)")
+            lines.append(f"  Vehicle : {evt.vehicle_type.upper()} (ID: {evt.vehicle_id})")
+            if evt.time_saved is not None and evt.time_saved > 0:
+                lines.append(f"  Saved   : {evt.time_saved:.1f}s")
+            pct = getattr(self.emergency_agent, 'response_time_improvement_pct', 0)
+            if pct and pct > 0:
+                lines.append(f"  Improvement: {pct:.1f}% faster than standard flow")
+            lines.append(f"  Signals have been returned to adaptive control.")
+
+        else:
+            lines.append(f"  Status  : STANDBY")
+            lines.append(f"  Monitoring for emergency vehicles...")
+
+        # ── Summary ──────────────────────────────────────────────────────
+        lines.append("")
+        lines.append("=" * 50)
+
+        # Build a one-line summary
+        total_congestion = sum(r.congestion_pct for r in route_recs) / max(len(route_recs), 1) if route_recs else 0
+        if status_val in ["CORRIDOR_ACTIVE", "CLEARING"]:
+            lines.append(f"PRIORITY: Emergency response in progress. All other traffic yielding.")
+        elif total_congestion > 60:
+            lines.append(f"WARNING: Network congestion at {total_congestion:.0f}%. Active diversions engaged.")
+        elif total_congestion > 30:
+            lines.append(f"ADVISORY: Moderate congestion ({total_congestion:.0f}%). Agents optimizing flow.")
+        else:
+            lines.append(f"STATUS: Network operating normally. Average congestion {total_congestion:.0f}%.")
 
         return "\n".join(lines)
 
     # ── Private ───────────────────────────────────────────────────────────────
 
     def _build_llm(self):
-        if not _LANGCHAIN_AVAILABLE:
-            return None
         try:
             if settings.llm_provider == "azure" and settings.azure_openai_api_key:
+                from langchain_openai import AzureChatOpenAI
                 return AzureChatOpenAI(
                     azure_endpoint    = settings.azure_openai_endpoint,
                     api_key           = settings.azure_openai_api_key,
@@ -150,6 +230,7 @@ Safety constraints:
                     temperature=0,
                 )
             elif settings.openai_api_key:
+                from langchain_openai import ChatOpenAI
                 return ChatOpenAI(
                     api_key     = settings.openai_api_key,
                     model       = settings.openai_model,
@@ -158,63 +239,4 @@ Safety constraints:
         except Exception:
             pass
         return None
-
-    def _build_tools(self) -> List:
-        if not _LANGCHAIN_AVAILABLE:
-            return []
-
-        def _signal_opt(signal_states_json: str) -> str:
-            states = json.loads(signal_states_json)
-            recs   = self.signal_agent.compute_recommendations(states)
-            if self.sim:
-                self.signal_agent.apply_recommendations(self.sim, recs)
-            return self.signal_agent.format_summary(recs)
-
-        def _route_rec(signal_states_json: str) -> str:
-            states = json.loads(signal_states_json)
-            recs   = self.route_agent.analyse(states)
-            return self.route_agent.format_summary(recs)
-
-        def _emergency(vehicle_type: str, entry_lane: str, vehicle_id: int) -> str:
-            if self.sim is None:
-                return "No simulation attached to orchestrator."
-            event = self.emergency_agent.detect(
-                self.sim,
-                vehicle_id   = vehicle_id,
-                vehicle_type = vehicle_type,
-                entry_lane   = entry_lane,
-            )
-            return self.emergency_agent.format_summary()
-
-        return [
-            StructuredTool(
-                name        = "signal_optimizer",
-                description = "Compute and apply optimal signal timing for all intersections.",
-                func        = _signal_opt,
-                args_schema = SignalOptInput,
-            ),
-            StructuredTool(
-                name        = "route_recommender",
-                description = "Analyse corridor congestion and recommend diversions.",
-                func        = _route_rec,
-                args_schema = RouteInput,
-            ),
-            StructuredTool(
-                name        = "emergency_priority",
-                description = "Activate an emergency green corridor for a first-responder vehicle.",
-                func        = _emergency,
-                args_schema = EmergencyInput,
-            ),
-        ]
-
-    def _build_executor(self) -> Optional[Any]:
-        if not _LANGCHAIN_AVAILABLE or self._llm is None:
-            return None
-        prompt = ChatPromptTemplate.from_messages([
-            ("system", self.SYSTEM_PROMPT),
-            ("human",  "Current signal state:\n{state}\n\nRequest: {input}"),
-            MessagesPlaceholder("agent_scratchpad"),
-        ])
-        agent = create_openai_tools_agent(self._llm, self._tools, prompt)
-        return AgentExecutor(agent=agent, tools=self._tools, verbose=True)
 

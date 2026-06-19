@@ -6,9 +6,9 @@ from pydantic import BaseModel, Field
 
 class SimulationConfig(BaseModel):
     mode:    str       = Field("adaptive", description="'static' or 'adaptive'")
-    density: List[int] = Field([65,60,40,45], description="[NS_col1, NS_col2, EW_row1, EW_row2] 0–100")
-    fps:     int       = Field(20,            description="Simulation frames per second")
-    seed:    int       = Field(42,            description="Random seed")
+    density: List[int] = Field([65, 60, 40, 45], description="[NS_col1, NS_col2, EW_row1, EW_row2] 0–100")
+    fps:     int       = Field(20, description="Simulation frames per second")
+    seed:    int       = Field(42, description="Random seed")
 
 
 class VehiclePosition(BaseModel):
@@ -20,6 +20,22 @@ class VehiclePosition(BaseModel):
     is_emergency: bool = False
     lane: str = ""
     heading: float = 0.0
+
+
+class IntersectionDetail(BaseModel):
+    """Per-node metrics for map overlays."""
+    name: str
+    phase: str
+    ns_green: float
+    ew_green: float
+    ns_queue: float
+    ew_queue: float
+    total_vehicles: int
+    congestion_pct: float
+    avg_wait_s: float
+    override: bool = False
+    ns_score: float = 0.0
+    ew_score: float = 0.0
 
 
 class RouteRecommendationData(BaseModel):
@@ -38,6 +54,10 @@ class EmergencyStatusData(BaseModel):
     entry_lane: Optional[str] = None
     response_time_s: Optional[float] = None
     decision_log: List[str] = []
+    explanation: Optional[str] = None
+    emergency_eta: Optional[float] = None
+    time_saved_s: Optional[float] = None
+    improvement_pct: Optional[float] = None
 
 
 class StepResponse(BaseModel):
@@ -51,7 +71,9 @@ class StepResponse(BaseModel):
     avg_speed_kmh:   float = 0.0
     fuel_consumed_l: float = 0.0
     co2_emitted_kg:  float = 0.0
+    optimization_pct: float = 0.0
     signal_states:   List[dict]
+    intersection_details: List[IntersectionDetail] = []
     vehicles:        List[VehiclePosition] = []
     route_recommendations: List[RouteRecommendationData] = []
     emergency_status: Optional[EmergencyStatusData] = None
@@ -60,7 +82,7 @@ class StepResponse(BaseModel):
 
 class EmergencyRequest(BaseModel):
     vehicle_type: str = Field("ambulance", description="ambulance | fire | police")
-    entry_lane:   str = Field("EB_top",    description="Which lane the vehicle enters from")
+    entry_lane:   str = Field("EB_top", description="Which lane the vehicle enters from")
     vehicle_id:   int = Field(999)
 
 

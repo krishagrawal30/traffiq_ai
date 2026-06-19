@@ -83,7 +83,7 @@ with st.sidebar:
 
     st.divider()
     st.markdown("**Agent 03 — Emergency Dispatch**")
-    e_lane = st.selectbox("Entry lane", ["NB_col1", "NB_col2", "SB_col1", "SB_col2", "EB_top", "EB_bottom", "WB_top", "WB_bottom"], index=0)
+    e_lane = st.selectbox("Entry lane", ["EB_top", "WB_top", "EB_bot", "WB_bot", "SB_left", "NB_left", "SB_right", "NB_right"], index=0)
     e_type = st.selectbox("Vehicle type", ["ambulance", "fire", "police"])
     if st.button("🚨 Dispatch Emergency Vehicle", use_container_width=True):
         import random
@@ -153,6 +153,34 @@ with map_col:
             .kpi-item { display: flex; flex-direction: column; }
             .kpi-val { font-size: 18px; font-weight: bold; color: #38bdf8; }
             .kpi-lbl { font-size: 10px; color: #94a3b8; text-transform: uppercase; }
+            .node-label {
+                background: rgba(15, 23, 42, 0.9);
+                border: 1px solid rgba(56, 189, 248, 0.4);
+                color: #e2e8f0;
+                padding: 6px 10px;
+                border-radius: 6px;
+                font-size: 11px;
+                pointer-events: none;
+                box-shadow: 0 2px 4px rgba(0,0,0,0.5);
+                backdrop-filter: blur(4px);
+                line-height: 1.3;
+                min-width: 100px;
+            }
+            .node-label.override {
+                border-color: #ef4444;
+                box-shadow: 0 0 10px rgba(239, 68, 68, 0.6);
+            }
+            .node-header {
+                font-weight: bold;
+                color: #38bdf8;
+                border-bottom: 1px solid rgba(255,255,255,0.1);
+                margin-bottom: 3px;
+                padding-bottom: 2px;
+                display: flex;
+                justify-content: space-between;
+            }
+            .node-stat { display: flex; justify-content: space-between; gap: 8px; }
+            .node-stat-val { font-weight: 600; }
         </style>
     </head>
     <body>
@@ -185,6 +213,7 @@ with map_col:
                 "SW": [BASE_LON - OFFSET, BASE_LAT - OFFSET],
                 "SE": [BASE_LON + OFFSET, BASE_LAT - OFFSET],
             };
+            const nodeMarkers = {};
 
             function connectWebSocket() {
                 ws = new WebSocket(wsUrl);
@@ -299,6 +328,17 @@ with map_col:
 
                 // Initialize static features
                 initStaticMapFeatures();
+                
+                // Initialize markers
+                for (const [key, coords] of Object.entries(INTERSECTIONS)) {
+                    const el = document.createElement('div');
+                    el.className = 'node-label';
+                    el.id = 'node-label-' + key;
+                    nodeMarkers[key] = new maplibregl.Marker({element: el, anchor: 'bottom-left', offset: [15, -15]})
+                        .setLngLat(coords)
+                        .addTo(map);
+                }
+
                 connectWebSocket();
                 
                 // Animate dashed line
@@ -352,7 +392,7 @@ with map_col:
                 const emerg = data.emergency_status;
                 const emergPanel = document.getElementById('emerg-alert');
                 
-                if (emerg && emerg.status === 'CORRIDOR_ACTIVE' && emerg.active_corridor && emerg.active_corridor.length >= 2) {
+                if (emerg && (emerg.status === 'CORRIDOR_ACTIVE' || emerg.status === 'CLEARING') && emerg.active_corridor && emerg.active_corridor.length >= 2) {
                     const pathCoords = emerg.active_corridor.map(node => INTERSECTIONS[node]);
                     
                     // Construct smooth line for the corridor
@@ -364,10 +404,53 @@ with map_col:
                     map.getSource('corridor-path').setData({ type: 'FeatureCollection', features: [corridorFeature] });
                     
                     emergPanel.classList.add('active');
-                    emergPanel.innerHTML = `🚨 AI REROUTING: GREEN CORRIDOR ACTIVE [${emerg.active_corridor.join(' → ')}]`;
+                    emergPanel.style.background = 'rgba(220, 38, 38, 0.9)'; // Red
+                    emergPanel.style.boxShadow = '0 0 15px rgba(220, 38, 38, 0.6)';
+                    let bannerText = `🚨 AI REROUTING: GREEN CORRIDOR ACTIVE [${emerg.active_corridor.join(' → ')}]`;
+                    if (emerg.emergency_eta) {
+                        bannerText += ` | ETA: ${emerg.emergency_eta.toFixed(1)}s`;
+                    }
+                    emergPanel.innerHTML = bannerText;
                 } else {
                     map.getSource('corridor-path').setData({ type: 'FeatureCollection', features: [] });
                     emergPanel.classList.remove('active');
+                    
+                    if (emerg && emerg.status === 'RESOLVED' && emerg.time_saved_s) {
+                         emergPanel.classList.add('active');
+                         emergPanel.style.background = 'rgba(16, 185, 129, 0.9)'; // Green
+                         emergPanel.style.boxShadow = '0 0 15px rgba(16, 185, 129, 0.6)';
+                         emergPanel.innerHTML = `✅ EMERGENCY CLEARED | Saved ${emerg.time_saved_s.toFixed(1)}s (${emerg.improvement_pct.toFixed(1)}%)`;
+                    }
+                }
+                
+                // Update Node Overlays
+                if (data.intersection_details) {
+                    data.intersection_details.forEach(node => {
+                        const marker = nodeMarkers[node.name];
+                        if (marker) {
+                            const el = marker.getElement();
+                            if (node.override) {
+                                el.classList.add('override');
+                            } else {
+                                el.classList.remove('override');
+                            }
+                            
+                            const color = node.congestion_pct > 80 ? '#ef4444' : (node.congestion_pct > 50 ? '#f59e0b' : '#10b981');
+                            
+                            el.innerHTML = `
+                                <div class="node-header">
+                                    <span>NODE ${node.name}</span>
+                                    <span style="color: ${node.override ? '#ef4444' : '#94a3b8'}; font-size: 9px; padding-left: 5px;">
+                                        ${node.override ? 'OVERRIDE' : node.phase}
+                                    </span>
+                                </div>
+                                <div class="node-stat"><span>Split:</span> <span class="node-stat-val">${node.ns_green.toFixed(0)}s / ${node.ew_green.toFixed(0)}s</span></div>
+                                <div class="node-stat"><span>Vehicles:</span> <span class="node-stat-val">${node.total_vehicles}</span></div>
+                                <div class="node-stat"><span>Wait:</span> <span class="node-stat-val">${node.avg_wait_s.toFixed(1)}s</span></div>
+                                <div class="node-stat"><span>Congest:</span> <span class="node-stat-val" style="color: ${color}">${node.congestion_pct.toFixed(0)}%</span></div>
+                            `;
+                        }
+                    });
                 }
             }
 
@@ -387,6 +470,10 @@ with map_col:
                             <span class="kpi-val" style="color: ${data.congestion_pct > 60 ? '#ef4444' : '#38bdf8'}">${data.congestion_pct.toFixed(0)}%</span>
                             <span class="kpi-lbl">Congestion</span>
                         </div>
+                        <div class="kpi-item">
+                            <span class="kpi-val" style="color: #10b981;">+${(data.optimization_pct || 0).toFixed(1)}%</span>
+                            <span class="kpi-lbl">Optimization</span>
+                        </div>
                     </div>
                 `;
                 document.getElementById('stats').innerHTML = html;
@@ -397,6 +484,34 @@ with map_col:
     """.replace("INJECT_WS_URL_HERE", WS_URL)
     
     components.html(MAP_HTML, height=600)
+
+    st.markdown("---")
+    st.markdown("### 🧠 AI Traffic Analysis & Orchestrator")
+    
+    # Initialize session state for AI analysis
+    if "ai_analysis" not in st.session_state:
+        st.session_state.ai_analysis = None
+    if "ai_question" not in st.session_state:
+        st.session_state.ai_question = "Analyze the current traffic state and recommend optimizations."
+        
+    col_q, col_btn = st.columns([3, 1])
+    with col_q:
+        q = st.text_input("Ask the Traffic Orchestrator:", value=st.session_state.ai_question, label_visibility="collapsed")
+    with col_btn:
+        if st.button("Analyze with LLM", type="primary", use_container_width=True):
+            with st.spinner("LLM is analyzing current grid state..."):
+                try:
+                    resp = requests.post(f"{API_URL}/analyse", json={"question": q}, timeout=45)
+                    if resp.status_code == 200:
+                        st.session_state.ai_analysis = resp.json().get("analysis", "")
+                        st.session_state.ai_question = q
+                except Exception as e:
+                    st.error(f"Error fetching analysis: {e}")
+                    
+    if st.session_state.ai_analysis:
+        st.markdown("**Orchestrator Decision & Analysis:**")
+        st.code(st.session_state.ai_analysis, language="markdown")
+
 
 with stats_col:
     st.markdown("### Agent Intelligence")
@@ -411,11 +526,11 @@ with stats_col:
         pass
         
     if state:
-        st.markdown("##### 🚦 Signal Optimization (Agent 1)")
-        df_sig = pd.DataFrame(state["signal_states"])
+        st.markdown("##### 🚦 Intersection Metrics (Agent 1)")
+        df_sig = pd.DataFrame(state.get("intersection_details", []))
         if not df_sig.empty:
-            df_sig = df_sig[["name", "phase", "ns_green", "ew_green", "override"]]
-            df_sig.columns = ["Node", "Phase", "NS(s)", "EW(s)", "OVR"]
+            df_sig = df_sig[["name", "phase", "ns_green", "ew_green", "total_vehicles", "avg_wait_s", "congestion_pct", "override"]]
+            df_sig.columns = ["Node", "Phase", "NS(s)", "EW(s)", "Vehicles", "Wait(s)", "Congest(%)", "OVR"]
             st.dataframe(df_sig, hide_index=True, use_container_width=True)
             
         st.markdown("##### 🗺️ Route Recommendations (Agent 2)")
@@ -428,11 +543,21 @@ with stats_col:
             
         st.markdown("##### 🚨 Emergency Priority (Agent 3)")
         emg = state.get("emergency_status")
-        if emg and emg["status"] == "CORRIDOR_ACTIVE":
-            st.error(f"**ACTIVE:** {emg['vehicle_type'].upper()} entering from {emg['entry_lane']}", icon="🚨")
-            path_str = " → ".join(emg['active_corridor'])
-            st.success(f"**AI Reroute Path:** {path_str}", icon="🗺️")
-            st.caption("Signals overriden along green corridor.")
+        if emg and emg["status"] in ["CORRIDOR_ACTIVE", "CLEARING"]:
+            st.error(f"**ACTIVE:** {emg['vehicle_type'].upper()} entering from {emg.get('entry_lane', 'unknown')}", icon="🚨")
+            if emg.get("active_corridor"):
+                path_str = " → ".join(emg['active_corridor'])
+                st.success(f"**AI Reroute Path:** {path_str}", icon="🗺️")
+            if emg.get("emergency_eta"):
+                st.caption(f"**ETA to destination:** {emg['emergency_eta']}s")
+            if emg.get("explanation"):
+                st.info(emg["explanation"])
+            if emg.get("improvement_pct"):
+                st.caption(f"**Optimization:** {emg['improvement_pct']}% faster response ({emg['time_saved_s']}s saved)")
+        elif emg and emg["status"] == "RESOLVED":
+            st.success(f"**RESOLVED:** {emg.get('vehicle_type', 'Vehicle').upper()} cleared.", icon="✅")
+            if emg.get("time_saved_s"):
+                st.caption(f"**Time Saved:** {emg['time_saved_s']}s ({emg['improvement_pct']}% improvement)")
         else:
             st.info("Monitoring for emergency vehicles...", icon="📡")
             
