@@ -1,73 +1,111 @@
-"""TRAFFICQ AI — API Pydantic models."""
+"""TRAFFICQ AI — API Pydantic models for Bengaluru traffic management."""
+
 from __future__ import annotations
-from typing import List, Optional
+
+from typing import Optional
 from pydantic import BaseModel, Field
 
 
 class SimulationConfig(BaseModel):
-    mode:    str       = Field("adaptive", description="'static' or 'adaptive'")
-    density: List[int] = Field([65,60,40,45], description="[NS_col1, NS_col2, EW_row1, EW_row2] 0–100")
-    fps:     int       = Field(20,            description="Simulation frames per second")
-    seed:    int       = Field(42,            description="Random seed")
+    mode: str = Field("adaptive", description="'static' or 'adaptive'")
+    hour: int = Field(8, description="Hour of day (0-23) for traffic pattern")
+    fps: int = Field(10, description="Frames per second")
+    seed: int = Field(42, description="Random seed")
+
+
+class SignalStateData(BaseModel):
+    name: str
+    phase: str
+    ns_green: float
+    ew_green: float
+    ns_queue: float
+    ew_queue: float
+    sw_queue: float
+    ne_queue: float
+    ns_score: float
+    ew_score: float
+    override: bool
+    congestion: float
+    total_queue: float
+
+
+class JunctionInfo(BaseModel):
+    name: str
+    lat: float
+    lon: float
+    congestion_pct: float
+    phase: str
+    queue_ns: float
+    queue_ew: float
 
 
 class VehiclePosition(BaseModel):
     vid: int
-    lat: float
-    lon: float
-    color: str = "#3B82F6"
-    waiting: bool = False
-    is_emergency: bool = False
-    lane: str = ""
-    heading: float = 0.0
+    junction: str
+    approach: str
+    progress: float
+    waiting: bool
+    is_emergency: bool
+    color: str
+    vehicle_type: str = "car"
+    lat: float = 12.918
+    lon: float = 77.622
 
 
-class RouteRecommendationData(BaseModel):
+class RouteRecData(BaseModel):
     corridor: str
     congestion_pct: float
     severity: str
     action: str
     alternate_route: str
     estimated_saving_s: float
+    affected_junctions: list[str]
 
 
 class EmergencyStatusData(BaseModel):
     status: str
-    active_corridor: Optional[List[str]] = None
+    active_corridor: Optional[list[str]] = None
     vehicle_type: Optional[str] = None
-    entry_lane: Optional[str] = None
-    response_time_s: Optional[float] = None
-    decision_log: List[str] = []
+    entry_junction: Optional[str] = None
+    eta_s: Optional[float] = None
+    explanation: Optional[str] = None
+    decision_log: list[str] = []
+
+
+class AgentLogEntry(BaseModel):
+    time_s: float
+    agent: str
+    message: str
+    severity: str = "info"
 
 
 class StepResponse(BaseModel):
-    frame:           int
-    time_s:          float
-    total_vehicles:  int
-    waiting_count:   int
-    avg_wait_s:      float
-    throughput_pm:   float
-    congestion_pct:  float
-    avg_speed_kmh:   float = 0.0
-    fuel_consumed_l: float = 0.0
-    co2_emitted_kg:  float = 0.0
-    signal_states:   List[dict]
-    vehicles:        List[VehiclePosition] = []
-    route_recommendations: List[RouteRecommendationData] = []
+    frame: int
+    time_s: float
+    hour: int
+    total_vehicles: int
+    waiting_count: int
+    avg_wait_s: float
+    throughput_pm: float
+    congestion_pct: float
+    signal_states: list[SignalStateData]
+    junctions: list[JunctionInfo]
+    vehicles: list[VehiclePosition]
+    route_recommendations: list[RouteRecData] = []
     emergency_status: Optional[EmergencyStatusData] = None
-    agent_log:       List[str] = []
+    agent_log: list[AgentLogEntry] = []
 
 
 class EmergencyRequest(BaseModel):
     vehicle_type: str = Field("ambulance", description="ambulance | fire | police")
-    entry_lane:   str = Field("EB_top",    description="Which lane the vehicle enters from")
-    vehicle_id:   int = Field(999)
+    entry_junction: str = Field("HSR_Layout", description="HSR_Layout | BTM_Layout | Madiwala | Silk_Board")
+    entry_approach: str = Field("NS_Hosur_Road", description="Approach lane name")
 
 
 class EmergencyResponse(BaseModel):
-    status:        str
-    corridor_path: List[str]
-    message:       str
+    status: str
+    corridor_path: list[str]
+    message: str
 
 
 class AnalysisRequest(BaseModel):
@@ -79,12 +117,14 @@ class AnalysisRequest(BaseModel):
 
 class AnalysisResponse(BaseModel):
     analysis: str
-    signal_recommendations: List[dict]
-    route_recommendations:  List[dict]
-    emergency_status:       str
+    signal_recommendations: list[dict]
+    route_recommendations: list[dict]
+    emergency_status: str
 
 
 class HealthResponse(BaseModel):
-    status:  str
+    status: str
     version: str
-    mode:    str
+    mode: str
+    hour: int
+    uptime_s: float

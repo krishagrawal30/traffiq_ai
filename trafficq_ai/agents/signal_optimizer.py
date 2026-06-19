@@ -1,139 +1,96 @@
 """
-TRAFFICQ AI — Agent 01: Signal Optimization
-Computes optimal green-time splits using priority scores and issues
-per-intersection timing recommendations.
+Agent 01 — Signal Optimization Agent (Bengaluru Silk Board Corridor)
+
+Adjusts green-light splits per junction using a priority formula:
+  G(direction) = round(P(direction) / ΣP × C)
+
+Where P(direction) = Wait_Time × 0.5 + Queue_Length × 0.3 + Congestion × 0.2
 """
+
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, List
+from typing import List
 
-# ─── Output types ─────────────────────────────────────────────────────────────
+CYCLE_S = 60.0
+MIN_GREEN_S = 10.0
 
 @dataclass
 class SignalRecommendation:
-    intersection: str
-    ns_green: float          # recommended NS green time (seconds)
-    ew_green: float          # recommended EW green time (seconds)
-    offset_s: float          # green-wave offset relative to upstream inter
+    junction: str
+    ns_green: float
+    ew_green: float
     reasoning: str
-    confidence: float        # 0–1
-
-
-# ─── Agent ────────────────────────────────────────────────────────────────────
+    confidence: float
+    estimated_impact: str
 
 class SignalOptimizerAgent:
-    """
-    Agent 01 — Signal Optimization
+    def __init__(self):
+        self._decision_log: list[str] = []
 
-    Implements the priority formula:
-        G(NS) = max(G_min, round( P(NS) / (P(NS)+P(EW)) × C ))
-
-    and adds green-wave coordination by staggering offsets based on the
-    average travel time between adjacent intersections.
-    """
-
-    CYCLE     = 60.0   # seconds
-    MIN_GREEN = 15.0   # seconds (pedestrian safety floor)
-
-    # Approximate travel time (seconds) between adjacent intersections
-    TRAVEL_TIME = 12.0
-
-    # Adjacent pairs for green-wave coordination (upstream → downstream)
-    GREEN_WAVE_PAIRS = [
-        ("NW", "NE"),  # eastbound top row
-        ("NE", "NW"),  # westbound top row
-        ("NW", "SW"),  # southbound left column
-        ("SW", "NW"),  # northbound left column
-        ("NE", "SE"),
-        ("SE", "NE"),
-        ("SW", "SE"),
-        ("SE", "SW"),
-    ]
-
-    def __init__(self) -> None:
-        self._offsets: Dict[str, float] = {n: 0.0 for n in ("NW", "NE", "SW", "SE")}
-
-    # ── Public ────────────────────────────────────────────────────────────────
-
-    def compute_recommendations(
-        self,
-        signal_states: List[dict],
-    ) -> List[SignalRecommendation]:
-        """
-        Given current signal states (from simulation.get_signal_state()),
-        return per-intersection timing recommendations.
-        """
-        recs: List[SignalRecommendation] = []
-        state_by_name = {s["name"]: s for s in signal_states}
-
+    def compute_recommendations(self, signal_states: list[dict]) -> list[SignalRecommendation]:
+        recs: list[SignalRecommendation] = []
         for s in signal_states:
-            name     = s["name"]
-            ns_score = s["ns_score"]
-            ew_score = s["ew_score"]
-            total    = ns_score + ew_score
+            name = s["name"]
+            ns_wait = s.get("ns_score", 0)
+            ew_wait = s.get("ew_score", 0)
+            ns_queue = s.get("ns_queue", 0)
+            ew_queue = s.get("ew_queue", 0)
+            ns_cong = ns_queue / max(25, 1) * 100
+            ew_cong = ew_queue / max(25, 1) * 100
 
-            if total < 0.5:
+            wait_factor = 0.5
+            queue_factor = 0.3
+            cong_factor = 0.2
+
+            p_ns = ns_wait * wait_factor + ns_queue * queue_factor + ns_cong * cong_factor
+            p_ew = ew_wait * wait_factor + ew_queue * queue_factor + ew_cong * cong_factor
+            total = p_ns + p_ew
+
+            if total < 1.0:
                 ns_g = 30.0
                 ew_g = 30.0
-                reason = "Priority scores too low — maintaining equal split."
-                conf   = 0.5
+                reason = f"Low traffic at {name} — maintaining balanced 30s/30s split"
+                conf = 0.3
             else:
-                ns_raw = round(ns_score / total * self.CYCLE)
-                ns_g   = max(self.MIN_GREEN, min(self.CYCLE - self.MIN_GREEN, float(ns_raw)))
-                ew_g   = self.CYCLE - ns_g
-                ratio  = ns_score / total
+                ns_raw = round(p_ns / total * CYCLE_S)
+                ns_g = max(MIN_GREEN_S, min(CYCLE_S - MIN_GREEN_S, float(ns_raw)))
+                ew_g = CYCLE_S - ns_g
+                ratio = p_ns / total
+                ns_label = f"NS gets {ratio*100:.0f}% of cycle"
+                ew_label = f"EW gets {(1-ratio)*100:.0f}% of cycle"
+                dominance = "NS" if ratio > 0.55 else "EW" if ratio < 0.45 else "balanced"
                 reason = (
-                    f"NS score {ns_score:.1f} vs EW score {ew_score:.1f} "
-                    f"→ NS gets {ratio*100:.0f}% of cycle."
+                    f"{name}: NS wait score {ns_wait:.1f}s (queue {ns_queue:.0f}), "
+                    f"EW wait score {ew_wait:.1f}s (queue {ew_queue:.0f}). "
+                    f"{ns_label}, {ew_label}. Signal dominance: {dominance}."
                 )
-                conf = min(0.99, 0.5 + abs(ratio - 0.5))
+                conf = min(0.95, 0.5 + abs(ratio - 0.5))
 
-            offset = self._compute_offset(name)
-            recs.append(SignalRecommendation(
-                intersection=name,
+            impact = self._estimate_impact(ns_g, ew_g, ns_queue, ew_queue)
+            rec = SignalRecommendation(
+                junction=name,
                 ns_green=ns_g,
                 ew_green=ew_g,
-                offset_s=offset,
                 reasoning=reason,
-                confidence=conf,
-            ))
-
+                confidence=round(conf, 2),
+                estimated_impact=impact,
+            )
+            self._decision_log.append(reason)
+            recs.append(rec)
         return recs
 
-    def apply_recommendations(
-        self,
-        sim,
-        recs: List[SignalRecommendation],
-    ) -> None:
-        """Push recommended timings into the running simulation."""
+    def apply_recommendations(self, sim, recs: list[SignalRecommendation]):
         for r in recs:
-            inter = sim.intersections.get(r.intersection)
-            if inter and not inter.override:
-                inter.ns_green = r.ns_green
-                inter.ew_green = r.ew_green
+            sim.set_signal_timings(r.junction, r.ns_green, r.ew_green)
 
-    def format_summary(self, recs: List[SignalRecommendation]) -> str:
-        lines = ["Agent 01 — Signal Optimization Recommendations", "=" * 52]
-        for r in recs:
-            lines.append(
-                f"  {r.intersection}: NS={r.ns_green:.0f}s  EW={r.ew_green:.0f}s  "
-                f"offset={r.offset_s:.0f}s  conf={r.confidence:.0%}"
-            )
-            lines.append(f"    ↳ {r.reasoning}")
-        return "\n".join(lines)
+    @staticmethod
+    def _estimate_impact(ns_g: float, ew_g: float, ns_q: float, ew_q: float) -> str:
+        if ns_q > 30 or ew_q > 30:
+            return "High — expected to clear >85% of queued vehicles this cycle"
+        if ns_q > 15 or ew_q > 15:
+            return "Moderate — gradual queue reduction expected"
+        return "Low — maintaining flow on clear approaches"
 
-    # ── Private ───────────────────────────────────────────────────────────────
-
-    def _compute_offset(self, name: str) -> float:
-        """
-        Simple green-wave offset: NW anchors at 0, adjacent intersections
-        are offset by the expected inter-intersection travel time.
-        """
-        offsets = {
-            "NW": 0.0,
-            "NE": self.TRAVEL_TIME,
-            "SW": self.TRAVEL_TIME,
-            "SE": self.TRAVEL_TIME * 2,
-        }
-        return offsets.get(name, 0.0)
+    def get_log(self) -> list[str]:
+        return self._decision_log[-20:]

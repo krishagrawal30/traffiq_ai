@@ -1,0 +1,132 @@
+{
+  "_description": "Golden dataset for TRAFFICQ AI evaluation. Each scenario defines traffic state and expected ideal agent response.",
+  "scenarios": [
+    {
+      "id": "morning_rush_silk_board",
+      "name": "Morning Rush at Silk Board (8:30 AM)",
+      "time_of_day": "08:30",
+      "traffic_state": {
+        "Silk_Board": {
+          "ns_queue": 65,
+          "ew_queue": 38,
+          "sw_queue": 42,
+          "ne_queue": 15,
+          "ns_wait_avg_s": 85,
+          "ew_wait_avg_s": 45,
+          "sw_wait_avg_s": 55
+        },
+        "Madiwala": {
+          "ns_queue": 48,
+          "ew_queue": 20
+        },
+        "HSR_Layout": {
+          "ns_queue": 35,
+          "ew_queue": 12
+        }
+      },
+      "expected_signal_action": "Extend NS_Hosur_Road green at Silk Board to 55s, increase NS at Madiwala to 50s",
+      "expected_route_action": "HIGH severity on N-S Hosur corridor — divert 20% traffic via Bannerghatta Road",
+      "reasoning": "NS queue at Silk Board is 1.7x EW queue. Morning peak Hosur Road direction needs priority."
+    },
+    {
+      "id": "evening_rush_silk_board",
+      "name": "Evening Rush at Silk Board (6:30 PM)",
+      "time_of_day": "18:30",
+      "traffic_state": {
+        "Silk_Board": {
+          "ns_queue": 40,
+          "ew_queue": 55,
+          "sw_queue": 35,
+          "ne_queue": 50,
+          "ns_wait_avg_s": 50,
+          "ew_wait_avg_s": 90,
+          "sw_wait_avg_s": 45
+        },
+        "Madiwala": {
+          "ns_queue": 30,
+          "ew_queue": 45
+        }
+      },
+      "expected_signal_action": "Extend EW_ORR green at Silk Board to 50s as ORR traffic dominates",
+      "expected_route_action": "HIGH severity on E-W ORR corridor — divert via NICE Road or alternate arterial",
+      "reasoning": "Evening reverse flow — ORR carries office return traffic toward Marathahalli. EW queue exceeds NS by 37%."
+    },
+    {
+      "id": "emergency_ambulance",
+      "name": "Ambulance on Hosur Road (peak)",
+      "time_of_day": "09:00",
+      "traffic_state": {
+        "Silk_Board": {
+          "ns_queue": 58,
+          "ew_queue": 32,
+          "sw_queue": 28
+        },
+        "Madiwala": {
+          "ns_queue": 42,
+          "ew_queue": 18
+        },
+        "HSR_Layout": {
+          "ns_queue": 30,
+          "ew_queue": 10
+        }
+      },
+      "emergency": {
+        "vehicle_type": "ambulance",
+        "entry_point": "HSR_Layout",
+        "destination": "Madiwala",
+        "route": "HSR_Layout_NS -> Silk_Board_NS -> Madiwala_NS"
+      },
+      "expected_signal_action": "Override all signals along HSR_Layout -> Silk_Board -> Madiwala to NS green. Clear corridor 15s before ETA.",
+      "expected_route_action": "CRITICAL — block all cross traffic on corridor. Notify system operators.",
+      "expected_clearance_time_s": 45,
+      "reasoning": "Emergency vehicle needs unimpeded passage. System must preempt signals 15s ahead of vehicle arrival."
+    },
+    {
+      "id": "midday_moderate",
+      "name": "Midday moderate flow (1:00 PM)",
+      "time_of_day": "13:00",
+      "traffic_state": {
+        "Silk_Board": {
+          "ns_queue": 22,
+          "ew_queue": 18,
+          "sw_queue": 15,
+          "ne_queue": 10
+        },
+        "Madiwala": {
+          "ns_queue": 18,
+          "ew_queue": 12
+        }
+      },
+      "expected_signal_action": "Balanced split (~35s NS / 25s EW) with slight NS priority",
+      "expected_route_action": "LOW — no diversion needed. Monitor only.",
+      "reasoning": "Moderate flow. No corridor exceeds 40% congestion. Keep equal splits with slight bias toward naturally heavier NS."
+    },
+    {
+      "id": "btm_to_silk_board_spillover",
+      "name": "BTM Layout spillover onto Silk Board",
+      "time_of_day": "09:15",
+      "traffic_state": {
+        "BTM_Layout": {
+          "ns_queue": 52,
+          "ew_queue": 15
+        },
+        "Silk_Board": {
+          "ns_queue": 60,
+          "ew_queue": 35,
+          "sw_queue": 55,
+          "ne_queue": 20
+        }
+      },
+      "expected_signal_action": "Extend SW_Bannerghatta green at Silk Board to 45s. Coordinate with BTM Layout NS to 45s.",
+      "expected_route_action": "HIGH on BTM-Silk Board corridor. Suggest diversion via Jayanagar 4th Block Road.",
+      "reasoning": "BTM queue spills onto Silk Board SW approach. Two connected junctions need coordinated timing to avoid gridlock."
+    }
+  ],
+  "metrics_benchmark": {
+    "avg_wait_time_target_s": 40,
+    "max_wait_time_target_s": 90,
+    "emergency_clearance_target_s": 50,
+    "congestion_reduction_target_pct": 30,
+    "throughput_increase_target_pct": 40
+  }
+}

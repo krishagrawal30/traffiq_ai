@@ -1,138 +1,127 @@
 """
-TRAFFICQ AI — Agent 02: Route Recommendation
-Monitors corridor congestion and issues diversion recommendations
-before bottlenecks cascade to adjacent roads.
+Agent 02 — Route Recommendation Agent
+
+Monitors corridor-level congestion along Bengaluru's Silk Board corridor
+and recommends traffic diversions when congestion thresholds are exceeded.
 """
+
 from __future__ import annotations
 
-from dataclasses import dataclass, field
-from typing import Dict, List, Optional
-# ─── Types ────────────────────────────────────────────────────────────────────
+from dataclasses import dataclass
+from typing import List
+
+CORRIDOR_CONFIG = {
+    "N-S Hosur Road Corridor": {
+        "junctions": ["HSR_Layout", "Silk_Board", "Madiwala"],
+        "primary_approach": "NS_Hosur_Road",
+        "alternate_route": "NICE Road / Bannerghatta Road via Jayanagar",
+        "congestion_capacity": 20,
+    },
+    "E-W ORR Corridor (Silk Board)": {
+        "junctions": ["Silk_Board"],
+        "primary_approach": "EW_ORR",
+        "alternate_route": "Deve Gowda Road / KHB Colony Road",
+        "congestion_capacity": 20,
+    },
+    "Bannerghatta Road Corridor": {
+        "junctions": ["BTM_Layout", "Silk_Board"],
+        "primary_approach": "SW_Bannerghatta",
+        "alternate_route": "Jayanagar 4th Block / NICE Road",
+        "congestion_capacity": 20,
+    },
+}
+
+THRESHOLDS = [
+    ("LOW", 0, 35, "No action required. Flow normal."),
+    ("MODERATE", 35, 55, "Monitor closely. Pre-position adjacent signal capacity."),
+    ("HIGH", 55, 75, "Activate diversions. Coordinate with Agent 01 for alternate green time."),
+    ("CRITICAL", 75, 100, "IMMEDIATE DIVERSION. Notify city operators. Block corridor entry."),
+]
 
 @dataclass
 class RouteRecommendation:
-    corridor: str            # e.g. "N-S Col 1"
+    corridor: str
     congestion_pct: float
-    severity: str            # "LOW" | "MODERATE" | "HIGH" | "CRITICAL"
-    action: str              # plain-English action
+    severity: str
+    action: str
     alternate_route: str
     estimated_saving_s: float
-
-# ─── Agent ────────────────────────────────────────────────────────────────────
+    affected_junctions: list[str]
 
 class RouteRecommenderAgent:
-    """
-    Agent 02 — Route Recommendation
+    def __init__(self):
+        self._history: dict[str, list[float]] = {c: [] for c in CORRIDOR_CONFIG}
+        self._decision_log: list[str] = []
 
-    Aggregates per-intersection queue depths to compute corridor-level
-    congestion, then recommends diversions when thresholds are exceeded.
-    Shares state with adjacent intersections so it does NOT push
-    bottlenecks downstream.
-    """
+    def analyse(self, signal_states: list[dict]) -> list[RouteRecommendation]:
+        state_map = {s["name"]: s for s in signal_states}
+        recs: list[RouteRecommendation] = []
 
-    THRESHOLDS = {
-        "LOW":      (0,   35),
-        "MODERATE": (35,  60),
-        "HIGH":     (60,  80),
-        "CRITICAL": (80, 100),
-    }
+        for corridor, config in CORRIDOR_CONFIG.items():
+            queues = []
+            for j_name in config["junctions"]:
+                s = state_map.get(j_name)
+                if not s:
+                    continue
+                approach = config["primary_approach"]
+                if approach == "NS_Hosur_Road" or approach == "NS_Bannerghatta":
+                    q = s.get("ns_queue", 0)
+                elif approach == "EW_ORR":
+                    q = s.get("ew_queue", 0)
+                elif approach == "SW_Bannerghatta":
+                    q = s.get("sw_queue", 0)
+                else:
+                    q = 0
+                queues.append(q)
 
-    # Maps corridor name → list of intersection names that form it
-    CORRIDORS: Dict[str, List[str]] = {
-        "N-S Col 1":  ["NW", "SW"],
-        "N-S Col 2":  ["NE", "SE"],
-        "E-W Row 1":  ["NW", "NE"],
-        "E-W Row 2":  ["SW", "SE"],
-    }
+            if not queues:
+                continue
 
-    ALTERNATE_ROUTES: Dict[str, str] = {
-        "N-S Col 1": "N-S Col 2  (divert via east column)",
-        "N-S Col 2": "N-S Col 1  (divert via west column)",
-        "E-W Row 1": "E-W Row 2  (divert via south corridor)",
-        "E-W Row 2": "E-W Row 1  (divert via north corridor)",
-    }
-
-    def __init__(self) -> None:
-        self._history: Dict[str, List[float]] = {c: [] for c in self.CORRIDORS}
-        self._active_diversions: List[str] = []
-
-    # ── Public ────────────────────────────────────────────────────────────────
-
-    def analyse(self, signal_states: List[dict]) -> List[RouteRecommendation]:
-        """Return a recommendation for each corridor based on directional congestion."""
-        by_name = {s["name"]: s for s in signal_states}
-        recs: List[RouteRecommendation] = []
-
-        for corridor, inter_names in self.CORRIDORS.items():
-            # Average directional congestion across the intersections in this corridor
-            congs = []
-            for n in inter_names:
-                if n in by_name:
-                    s = by_name[n]
-                    if corridor.startswith("N-S"):
-                        q = s.get("ns_queue", 0)
-                    else:
-                        q = s.get("ew_queue", 0)
-                    # Directional congestion (cap assumed 20)
-                    dir_cong = min(100.0, (q / 20.0) * 100.0)
-                    congs.append(dir_cong)
-            
-            avg_cong = sum(congs) / len(congs) if congs else 0.0
-
-            # Track history
-            self._history[corridor].append(avg_cong)
+            avg_queue = sum(queues) / len(queues)
+            capacity = config["congestion_capacity"]
+            congestion = min(100.0, avg_queue / capacity * 100)
+            self._history[corridor].append(congestion)
             if len(self._history[corridor]) > 300:
                 self._history[corridor].pop(0)
 
-            severity = self._classify(avg_cong)
-            action, saving = self._build_action(corridor, avg_cong, severity)
+            severity, action = self._classify(congestion)
+            saving = self._estimate_saving(severity)
 
-            recs.append(RouteRecommendation(
+            rec = RouteRecommendation(
                 corridor=corridor,
-                congestion_pct=round(avg_cong, 1),
+                congestion_pct=round(congestion, 1),
                 severity=severity,
                 action=action,
-                alternate_route=self.ALTERNATE_ROUTES[corridor],
+                alternate_route=config["alternate_route"],
                 estimated_saving_s=saving,
-            ))
+                affected_junctions=config["junctions"],
+            )
+            self._decision_log.append(
+                f"[{corridor}] Congestion {congestion:.0f}% → {severity}. {action[:50]}"
+            )
+            recs.append(rec)
         return recs
 
-    def format_summary(self, recs: List[RouteRecommendation]) -> str:
-        lines = ["Agent 02 — Route Recommendation Analysis", "=" * 48]
-        for r in recs:
-            tag = f"[{r.severity}]"
-            lines.append(f"  {r.corridor:<14} {r.congestion_pct:>5.1f}%  {tag:<10} {r.action}")
-            if r.severity in ("HIGH", "CRITICAL"):
-                lines.append(f"    ↳ Alternate: {r.alternate_route}  (~{r.estimated_saving_s:.0f}s saved)")
-        return "\n".join(lines)
+    def _classify(self, congestion: float) -> tuple[str, str]:
+        for level, lo, hi, base_action in THRESHOLDS:
+            if lo <= congestion < hi:
+                if level in ("HIGH", "CRITICAL"):
+                    corridor_info = next(
+                        (c for c, v in CORRIDOR_CONFIG.items()
+                         if self._history.get(c, []) and self._history[c][-1] == congestion),
+                        ""
+                    )
+                    alt = CORRIDOR_CONFIG.get(corridor_info, {}).get("alternate_route", "alternate route")
+                    action = base_action + f" Recommend: {alt}"
+                else:
+                    action = base_action
+                return level, action
+        return "CRITICAL", "IMMEDIATE DIVERSION. All approaches congested."
 
-    # ── Private ───────────────────────────────────────────────────────────────
+    @staticmethod
+    def _estimate_saving(severity: str) -> float:
+        savings = {"LOW": 0, "MODERATE": 5, "HIGH": 18, "CRITICAL": 35}
+        return float(savings.get(severity, 0))
 
-    def _classify(self, cong: float) -> str:
-        for level, (lo, hi) in self.THRESHOLDS.items():
-            if lo <= cong < hi:
-                return level
-        return "CRITICAL"
-
-    def _build_action(
-        self,
-        corridor: str,
-        cong: float,
-        severity: str,
-    ) -> tuple[str, float]:
-        if severity == "LOW":
-            return "No action required — flow normal.", 0.0
-        if severity == "MODERATE":
-            return "Monitor closely. Pre-position adjacent signal capacity.", 5.0
-        if severity == "HIGH":
-            return (
-                f"Activate diversion → {self.ALTERNATE_ROUTES[corridor]}. "
-                "Coordinate with Agent 01 to extend alternate green time.",
-                18.0,
-            )
-        # CRITICAL
-        return (
-            f"IMMEDIATE diversion. Notify city operators. "
-            f"Force {self.ALTERNATE_ROUTES[corridor]} — block entry to {corridor}.",
-            35.0,
-        )
+    def get_log(self) -> list[str]:
+        return self._decision_log[-20:]

@@ -1,0 +1,11 @@
+junction_name,approach,peak_green_sec,offpeak_green_sec,cycle_length_sec,notes
+Silk_Board,NS_Hosur_Road,55,35,120,NH44 corridor - heaviest traffic
+Silk_Board,EW_ORR,40,30,120,Outer Ring Road approach
+Silk_Board,SW_Bannerghatta,35,25,120,Bannerghatta Road approach
+Silk_Board,NE_Central_Silk_Board,30,20,120,Office area approach
+Madiwala,NS_Hosur_Road,50,32,110,Dense commercial area
+Madiwala,EW_BC_Road,35,28,110,Cross road
+HSR_Layout,NS_Hosur_Road,45,30,100,Residential area
+HSR_Layout,EW_HSR_Sector1,30,22,100,Local road
+BTM_Layout,NS_Bannerghatta,40,28,100,Residential + commercial
+BTM_Layout,EW_BTM_Main,30,22,100,Local road
